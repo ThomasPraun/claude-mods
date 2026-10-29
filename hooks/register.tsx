@@ -1,7 +1,14 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderSurface } from 'claude-code'
 
-import type { OpenSession, SessionStatus, SessionsView, UsageLimit, UsageView } from '../types'
+import type {
+  OpenSession,
+  SessionStatus,
+  SessionsView,
+  SubagentRow,
+  UsageLimit,
+  UsageView,
+} from '../types'
 
 const PANE = 'open-sessions'
 const LOCAL_POLL_MS = 3000
@@ -24,6 +31,49 @@ const usage = atom(
   { ctxPercent: null, window: 0, limits: [] },
   { shape: 'usage-1' },
 )
+
+const subagents = atom({ plugin: 'open-sessions', key: 'subagents' } as const, [], {
+  shape: 'subagents-1',
+})
+
+const unseen = atom({ plugin: 'open-sessions', key: 'unseen' } as const, {}, {
+  shape: 'unseen-1',
+})
+
+const sessionKey = (one: OpenSession) => `${one.host}/${one.sessionId}`
+
+const markSeen = ($: EngineInterface, one: OpenSession) =>
+  update($, unseen, all => {
+    const { [sessionKey(one)]: _, ...rest } = all
+    return rest
+  })
+
+const collapsed = atom({ plugin: 'open-sessions', key: 'collapsed' } as const, {}, {
+  shape: 'collapsed-1',
+})
+
+const ACTIVE_AGENT = new Set(['pending', 'running', 'waiting'])
+// Finished subagents stay listed, dim, up to this many of the most recent.
+const MAX_FINISHED_AGENTS = 5
+const AGENT_LOOK: Record<string, { label: string; color: string }> = {
+  pending: { label: 'en cola', color: 'inactive' },
+  running: { label: 'trabajando', color: 'warning' },
+  waiting: { label: 'te espera', color: 'error' },
+  idle: { label: 'en pausa', color: 'suggestion' },
+  completed: { label: 'terminado', color: 'success' },
+  failed: { label: 'falló', color: 'error' },
+  killed: { label: 'detenido', color: 'inactive' },
+}
+
+// `claude-opus-5-5[1m]` → `Opus 5.5`; unknown shapes pass through without a `(… context)` suffix.
+const shortModel = (model: string) => {
+  const id = model.replace(/\[.*\]$/, '').match(/^claude-([a-z]+)-(\d+)(?:-(\d+))?/)
+  if (id) {
+    const [, family = '', major, minor] = id
+    return `${family[0]?.toUpperCase()}${family.slice(1)} ${major}${minor ? `.${minor}` : ''}`
+  }
+  return model.replace(/\s*\(.*context\)\s*$/i, '')
+}
 
 const BAR_WIDTH = 14
 const DAYS = ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb']
@@ -126,8 +176,47 @@ const goToSession = async ($: EngineInterface, one: OpenSession) => {
   $.ui.toast(`No se puede abrir ${one.name} desde aquí.`)
 }
 
+// The agent list carries no model; the spawn answers it, so it is kept here by agent id.
+const agentModels = new Map<string, string>()
+let agentStatuses = new Map<string, string>()
+
+const refreshSubagents = async ($: EngineInterface) => {
+  const list = await $.agent.list().catch(() => [])
+  const rows: SubagentRow[] = list
+    .filter(agent => agent.teammateId === undefined)
+    .map(agent => {
+      const model = agentModels.get(agent.id)
+      return {
+        id: agent.id,
+        label: agent.description || agent.type,
+        type: agent.type,
+        status: agent.status,
+        ...(model !== undefined && { model }),
+      }
+    })
+  for (const row of rows) {
+    const before = agentStatuses.get(row.id)
+    if (before === undefined || before === row.status) continue
+    if (row.status === 'waiting') $.ui.toast(`Subagente "${row.label}" te espera`)
+    if (ACTIVE_AGENT.has(before) && !ACTIVE_AGENT.has(row.status)) {
+      $.ui.toast(`Subagente "${row.label}" ${AGENT_LOOK[row.status]?.label ?? row.status}`)
+    }
+  }
+  agentStatuses = new Map(rows.map(row => [row.id, row.status]))
+  const active = rows.filter(row => ACTIVE_AGENT.has(row.status))
+  const finished = rows.filter(row => !ACTIVE_AGENT.has(row.status)).slice(-MAX_FINISHED_AGENTS)
+  await update($, subagents, () => [...active, ...finished])
+}
+
 export const register: Register = on => {
   let previous = new Map<string, SessionStatus>()
+  on('agent.spawn', async ($, e, next) => {
+    const spawned = await next(e)
+    if (spawned.agentId && spawned.model) agentModels.set(spawned.agentId, shortModel(spawned.model))
+    await refreshSubagents($)
+
+    return spawned
+  })
 
   on('session.start', async ($, e, next) => {
     const started = await next(e)
@@ -159,14 +248,25 @@ export const register: Register = on => {
 
     const publish = async () => {
       const all = [...local, ...remote]
+      const finished: string[] = []
+      const resumed: string[] = []
       for (const one of all) {
-        const key = `${one.host}/${one.sessionId}`
-        const before = previous.get(key)
-        if (!one.isSelf && before !== undefined && before !== 'waiting' && one.status === 'waiting') {
-          $.ui.toast(`${one.name} (${baseName(one.cwd)}, ${one.host}) te espera`)
+        const before = previous.get(sessionKey(one))
+        if (one.isSelf || before === undefined || before === one.status) continue
+        const where = `${one.name} (${baseName(one.cwd)}, ${one.host})`
+        if (one.status === 'waiting') $.ui.toast(`${where} te espera`)
+        if (before === 'busy' && one.status === 'idle') {
+          $.ui.toast(`${where} terminó`)
+          finished.push(sessionKey(one))
         }
+        if (one.status === 'busy') resumed.push(sessionKey(one))
       }
-      previous = new Map(all.map(one => [`${one.host}/${one.sessionId}`, one.status]))
+      previous = new Map(all.map(one => [sessionKey(one), one.status]))
+      const alive = new Set(all.map(sessionKey))
+      await update($, unseen, marks => {
+        const kept = Object.keys(marks).filter(key => alive.has(key) && !resumed.includes(key))
+        return Object.fromEntries([...kept, ...finished].map(key => [key, true]))
+      })
       const shown: SessionsView = { host, sessions: all, ...(note !== undefined && { note }) }
       await update($, view, () => shown)
     }
@@ -215,6 +315,7 @@ export const register: Register = on => {
         }
         local = found.sort(byStatus)
         await publish()
+        await refreshSubagents($)
       } finally {
         isPollingLocal = false
       }
@@ -328,10 +429,47 @@ export const register: Register = on => {
     const { Box, Button, Text } = $.ui.resolve(e)
     const { host, sessions, note } = await read($, view)
     const { ctxPercent, window, limits } = await read($, usage)
+    const agents = await read($, subagents)
+    const folded = await read($, collapsed)
+    const marks = await read($, unseen)
     const hosts = [host, ...new Set(sessions.map(one => one.host).filter(name => name !== host))]
 
+    const header = (
+      id: string,
+      title: string,
+      summary?: string,
+      counts: Array<{ count: number; color: string; glyph?: string }> = [],
+    ) => (
+      <Button
+        key={`toggle:${id}`}
+        plain
+        onPress={() => void update($, collapsed, all => ({ ...all, [id]: !all[id] }))}
+      >
+        <Text weight="semibold">
+          {folded[id] ? '▸' : '▾'} {title}
+        </Text>
+        {summary !== undefined && <Text dimColor> · {summary}</Text>}
+        {counts
+          .filter(({ count }) => count > 0)
+          .map(({ count, color, glyph = '●' }) => (
+            <Text color={color}>
+              {' '}
+              {glyph}
+              {count}
+            </Text>
+          ))}
+      </Button>
+    )
+
+    const statusCounts = (list: OpenSession[]) =>
+      (['waiting', 'busy', 'idle'] as const).map(status => ({
+        count: list.filter(one => one.status === status).length,
+        color: LOOK[status].color,
+      }))
+
     const meter = (label: string, used: number | null, value: string, detail?: string) => {
-      const filled = used === null ? 0 : Math.min(BAR_WIDTH, Math.max(0, Math.round((used * BAR_WIDTH) / 100)))
+      const filled =
+        used === null ? 0 : Math.min(BAR_WIDTH, Math.max(0, Math.round((used * BAR_WIDTH) / 100)))
 
       return (
         <Box key={`meter:${label}`} flexDirection="row" gap={1}>
@@ -350,72 +488,137 @@ export const register: Register = on => {
       )
     }
 
+    const activeAgents = agents.filter(agent => ACTIVE_AGENT.has(agent.status)).length
+    const fiveHour = limits.find(limit => limit.kind === 'five_hour')
+    const usageSummary = [
+      ctxPercent === null ? undefined : `ctx ${ctxPercent}%`,
+      fiveHour === undefined ? undefined : `5h ${Math.max(0, Math.round(100 - fiveHour.percentUsed))}% libre`,
+    ]
+      .filter(part => part !== undefined)
+      .join(' · ')
+
     return (
       <Box flexDirection="column" gap={1}>
         {note !== undefined && <Text dimColor>{note}</Text>}
         {hosts.map(name => {
           const ofHost = sessions.filter(one => one.host === name)
+          const sectionId = `host:${name}`
+          const isUnseen = (one: OpenSession) => marks[sessionKey(one)] === true
+          // Folding hides only what needs nothing: a session waiting or finished unseen always shows.
+          const shown = folded[sectionId]
+            ? ofHost.filter(one => one.status === 'waiting' || isUnseen(one))
+            : ofHost
 
           return (
-            <Box flexDirection="column">
-              <Text weight="semibold">
-                {name}
-                {name === host ? ' (esta PC)' : ''}
-              </Text>
-              {ofHost.length === 0 && <Text dimColor>{'  '}Sin sesiones abiertas.</Text>}
-              {ofHost.map(one => (
-                <Box flexDirection="column">
-                  <Box flexDirection="row" gap={1}>
-                    {name === host && !one.isSelf ? (
-                      <Button key={one.sessionId} plain onPress={() => void goToSession($, one)}>
-                        <Text color={LOOK[one.status].color}>● </Text>
-                        <Text bold>{one.name}</Text>
-                      </Button>
-                    ) : (
-                      <Text>
-                        <Text color={LOOK[one.status].color}>● </Text>
-                        <Text bold>{one.name}</Text>
-                        {one.isSelf && <Text dimColor> (esta)</Text>}
-                      </Text>
-                    )}
-                    <Button
-                      key={`copy:${one.host}/${one.sessionId}`}
-                      label="copiar"
-                      plain
-                      dimColor
-                      onPress={press => void copyName($, one, press.surface)}
-                    />
+            <Box key={sectionId} flexDirection="column">
+              {header(
+                sectionId,
+                name === host ? `${name} (esta PC)` : name,
+                ofHost.length === 0 ? 'sin sesiones' : undefined,
+                [
+                  ...statusCounts(ofHost),
+                  { count: ofHost.filter(isUnseen).length, color: 'success', glyph: '✓' },
+                ],
+              )}
+              {!folded[sectionId] && ofHost.length === 0 && (
+                <Text dimColor>{'  '}Sin sesiones abiertas.</Text>
+              )}
+              {shown.map(one => (
+                  <Box key={`row:${one.host}/${one.sessionId}`} flexDirection="column">
+                    <Box flexDirection="row" gap={1}>
+                      {name === host && !one.isSelf ? (
+                        <Button
+                          key={one.sessionId}
+                          plain
+                          onPress={() => void markSeen($, one).then(() => goToSession($, one))}
+                        >
+                          <Text color={LOOK[one.status].color}>● </Text>
+                          <Text bold>{one.name}</Text>
+                          {isUnseen(one) && <Text color="success"> ✓ terminó</Text>}
+                        </Button>
+                      ) : isUnseen(one) ? (
+                        // Another PC's session cannot be opened from here: pressing only clears the mark.
+                        <Button key={one.sessionId} plain onPress={() => void markSeen($, one)}>
+                          <Text color={LOOK[one.status].color}>● </Text>
+                          <Text bold>{one.name}</Text>
+                          <Text color="success"> ✓ terminó</Text>
+                        </Button>
+                      ) : (
+                        <Text>
+                          <Text color={LOOK[one.status].color}>● </Text>
+                          <Text bold>{one.name}</Text>
+                          {one.isSelf && <Text dimColor> (esta)</Text>}
+                        </Text>
+                      )}
+                      <Button
+                        key={`copy:${one.host}/${one.sessionId}`}
+                        label="copiar"
+                        plain
+                        dimColor
+                        onPress={press => void copyName($, one, press.surface)}
+                      />
+                    </Box>
+                    <Text dimColor>
+                      {'  '}
+                      {baseName(one.cwd)} · {LOOK[one.status].label}
+                      {one.status === 'waiting' && one.waitingFor ? ` (${one.waitingFor})` : ''}
+                      {one.entrypoint === 'claude-desktop' ? ' · app' : ' · terminal'}
+                    </Text>
                   </Box>
-                  <Text dimColor>
-                    {'  '}
-                    {baseName(one.cwd)} · {LOOK[one.status].label}
-                    {one.status === 'waiting' && one.waitingFor ? ` (${one.waitingFor})` : ''}
-                    {one.entrypoint === 'claude-desktop' ? ' · app' : ' · terminal'}
-                  </Text>
-                </Box>
-              ))}
+                ))}
             </Box>
           )
         })}
-        <Box flexDirection="column">
-          <Text dimColor>{'─'.repeat(BAR_WIDTH + 18)}</Text>
-          <Text weight="semibold">Uso</Text>
-          {meter(
-            'Contexto',
-            ctxPercent,
-            ctxPercent === null ? '--' : `${ctxPercent}%`,
-            window > 0 ? `de ${formatWindow(window)}` : undefined,
-          )}
-          {limits.map(limit => {
-            const reset = formatReset(limit)
+        <Text dimColor>{'─'.repeat(BAR_WIDTH + 18)}</Text>
+        {agents.length > 0 && (
+          <Box key="section:agents" flexDirection="column">
+            {header(
+              'agents',
+              'Subagentes',
+              activeAgents > 0 ? `${activeAgents} activos` : 'ninguno activo',
+            )}
+            {agents
+              .filter(agent => !folded.agents || agent.status === 'waiting')
+              .map(agent => {
+                const look = AGENT_LOOK[agent.status] ?? { label: agent.status, color: 'inactive' }
+                const isActive = ACTIVE_AGENT.has(agent.status)
 
-            return meter(
-              LIMIT_LABELS[limit.kind] ?? limit.kind,
-              limit.percentUsed,
-              `${Math.max(0, Math.round(100 - limit.percentUsed))}% libre`,
-              reset !== undefined ? `↺ ${reset}` : undefined,
-            )
-          })}
+                return (
+                  <Box key={`agent:${agent.id}`} flexDirection="column">
+                    <Text wrap="truncate-end" dimColor={!isActive}>
+                      <Text color={look.color}>● </Text>
+                      <Text bold={isActive}>{agent.label}</Text>
+                    </Text>
+                    <Text dimColor wrap="truncate-end">
+                      {'  '}
+                      {agent.type}
+                      {agent.model !== undefined ? ` · ${agent.model}` : ''} · {look.label}
+                    </Text>
+                  </Box>
+                )
+              })}
+          </Box>
+        )}
+        <Box key="section:usage" flexDirection="column">
+          {header('usage', 'Uso', folded.usage && usageSummary !== '' ? usageSummary : undefined)}
+          {!folded.usage &&
+            meter(
+              'Contexto',
+              ctxPercent,
+              ctxPercent === null ? '--' : `${ctxPercent}%`,
+              window > 0 ? `de ${formatWindow(window)}` : undefined,
+            )}
+          {!folded.usage &&
+            limits.map(limit => {
+              const reset = formatReset(limit)
+
+              return meter(
+                LIMIT_LABELS[limit.kind] ?? limit.kind,
+                limit.percentUsed,
+                `${Math.max(0, Math.round(100 - limit.percentUsed))}% libre`,
+                reset !== undefined ? `↺ ${reset}` : undefined,
+              )
+            })}
         </Box>
       </Box>
     )

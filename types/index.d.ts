@@ -34,8 +34,27 @@ export type UsageView = {
   limits: UsageLimit[]
 }
 
+export type SubagentRow = {
+  id: string
+  /** The Agent call's description, else its type. */
+  label: string
+  type: string
+  /** An AgentStatus: pending, running, waiting, idle, completed, failed or killed. */
+  status: string
+  /** Short display name (`Sonnet 5.5`); absent when spawned before the mod loaded. */
+  model?: string
+}
+
 declare module 'claude-code' {
   interface PluginState {
-    'open-sessions': { view: Shaped<SessionsView>; usage: Shaped<UsageView> }
+    'open-sessions': {
+      view: Shaped<SessionsView>
+      usage: Shaped<UsageView>
+      subagents: Shaped<SubagentRow[]>
+      /** Section id → collapsed. */
+      collapsed: Shaped<Record<string, boolean>>
+      /** `<host>/<sessionId>` of sessions that went from busy to free and were not looked at yet. */
+      unseen: Shaped<Record<string, boolean>>
+    }
   }
 }

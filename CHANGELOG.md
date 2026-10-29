@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-10-29
+
+### Added
+
+- "Subagentes" section above "Uso": the current chat's subagents with their type, model and
+  status; finished ones stay listed, dim, up to the last five.
+- Every section (each PC, Subagentes, Uso) folds and unfolds by pressing its header. A PC's
+  header always counts its sessions by status, and a folded section still lists every session
+  or subagent waiting on you.
+- A session that goes from busy to free shows a toast and a "✓ terminó" mark until you press
+  it or it starts working again; folding never hides it.
+- Toasts when a subagent starts waiting on you or finishes.
+
 ## [0.5.0] - 2026-10-29
 
 ### Added

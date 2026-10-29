@@ -14,6 +14,18 @@ Al tocar una sesión de la misma PC se abre: las de la app de escritorio en su c
 terminal enfocando su panel de [herdr](https://herdr.dev) (si corren dentro de herdr). Las
 sesiones de otras PCs solo se muestran.
 
+Si el chat actual lanzó subagentes, la sección **Subagentes** muestra cada uno con su tipo,
+modelo y estado; los terminados quedan atenuados (hasta los últimos cinco).
+
+Cuando una sesión termina (pasa de ocupada a libre) aparece un aviso y queda marcada con
+**✓ terminó** hasta que la tocas o vuelve a trabajar. También hay aviso cuando un subagente te
+espera o termina.
+
+Cada sección (cada PC, Subagentes y Uso) se pliega y despliega al tocar su título. El título
+de cada PC cuenta siempre sus sesiones por estado (●🔴 ●🟠 ●🔵 y ✓ las terminadas sin ver), y
+una sección plegada sigue mostrando las sesiones que te esperan o terminaron sin que las vieras,
+para que nunca se te pase una.
+
 Abajo, la sección **Uso** muestra cuánto contexto lleva la sesión actual y cuánto queda de los
 límites de 5 horas y 7 días de tu cuenta, con la hora en que se reinicia cada uno.
 
