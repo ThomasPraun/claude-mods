@@ -10,6 +10,10 @@ abiertas en tus PCs (macOS, Windows y Linux) y el estado de cada una:
 Las sesiones aparecen agrupadas por PC. Cuando una sesión pasa a 🔴 aparece un aviso. El
 comando `/sesiones` vuelve a abrir el panel si lo cerraste.
 
+Al tocar una sesión de la misma PC se abre: las de la app de escritorio en su chat, y las de la
+terminal enfocando su panel de [herdr](https://herdr.dev) (si corren dentro de herdr). Las
+sesiones de otras PCs solo se muestran.
+
 ## Cómo se comparten las sesiones entre PCs
 
 Cada PC lee sus propias sesiones de `~/.claude/sessions` y las publica en un **Gist secreto**

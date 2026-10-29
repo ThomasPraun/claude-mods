@@ -7,6 +7,7 @@ export type OpenSession = {
   status: SessionStatus
   waitingFor?: string
   entrypoint: string
+  hostSessionId?: string
   host: string
   isSelf: boolean
 }

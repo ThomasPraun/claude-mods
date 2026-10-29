@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-10-29
+
+### Added
+
+- Pressing a session of this PC opens it: desktop app sessions through their `claude://` link,
+  terminal sessions by focusing their herdr pane.
+
 ## [0.2.0] - 2026-10-29
 
 ### Added

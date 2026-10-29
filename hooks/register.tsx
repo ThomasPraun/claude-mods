@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { Register } from 'claude-code'
+import type { EngineInterface, Register } from 'claude-code'
 
 import type { OpenSession, SessionStatus, SessionsView } from '../types'
 
@@ -35,6 +35,37 @@ const byStatus = (a: OpenSession, b: OpenSession) =>
   ORDER[a.status] - ORDER[b.status] || a.name.localeCompare(b.name)
 
 type HostReport = { host: string; updatedAt: number; sessions: OpenSession[] }
+
+const openUrl = async ($: EngineInterface, url: string) => {
+  if ((await $.env.get('OS')) === 'Windows_NT') {
+    await $.process.run(['cmd', '/c', 'start', '', url])
+    return
+  }
+  const { exitCode } = await $.process.run(['open', url]).catch(() => ({ exitCode: 1 }))
+  if (exitCode !== 0) await $.process.run(['xdg-open', url])
+}
+
+// Desktop sessions open through the app's own claude:// link; terminal sessions only when herdr hosts them.
+const goToSession = async ($: EngineInterface, one: OpenSession) => {
+  try {
+    if (one.hostSessionId) {
+      await openUrl($, `claude://code/needs-input?session=${encodeURIComponent(one.hostSessionId)}`)
+      return
+    }
+    const { exitCode, stdout } = await $.process.run(['herdr', 'agent', 'list'], { timeoutMs: 5000 })
+    const agents: Array<{ pane_id: string; agent_session?: { value?: string } }> =
+      exitCode === 0 ? JSON.parse(stdout).result.agents : []
+    const pane = agents.find(agent => agent.agent_session?.value === one.sessionId)?.pane_id
+    if (pane) {
+      await $.process.run(['herdr', 'agent', 'focus', pane], { timeoutMs: 5000 })
+      $.ui.toast(`${one.name} enfocada en herdr.`)
+      return
+    }
+  } catch {
+    // Neither the app link nor herdr answered: fall through to the toast.
+  }
+  $.ui.toast(`No se puede abrir ${one.name} desde aquí.`)
+}
 
 export const register: Register = on => {
   let previous = new Map<string, SessionStatus>()
@@ -112,6 +143,7 @@ export const register: Register = on => {
               status: toStatus(raw.status),
               ...(typeof raw.waitingFor === 'string' && { waitingFor: raw.waitingFor }),
               entrypoint: String(raw.entrypoint ?? ''),
+              ...(typeof raw.hostSessionId === 'string' && { hostSessionId: raw.hostSessionId }),
               host,
               isSelf: raw.sessionId === selfId,
             })
@@ -225,7 +257,7 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text } = $.ui.resolve(e)
+    const { Box, Button, Text } = $.ui.resolve(e)
     const { host, sessions, note } = await read($, view)
     const hosts = [host, ...new Set(sessions.map(one => one.host).filter(name => name !== host))]
 
@@ -244,11 +276,18 @@ export const register: Register = on => {
               {ofHost.length === 0 && <Text dimColor>{'  '}Sin sesiones abiertas.</Text>}
               {ofHost.map(one => (
                 <Box flexDirection="column">
-                  <Text>
-                    <Text color={LOOK[one.status].color}>● </Text>
-                    <Text bold>{one.name}</Text>
-                    {one.isSelf && <Text dimColor> (esta)</Text>}
-                  </Text>
+                  {name === host && !one.isSelf ? (
+                    <Button key={one.sessionId} plain onPress={() => void goToSession($, one)}>
+                      <Text color={LOOK[one.status].color}>● </Text>
+                      <Text bold>{one.name}</Text>
+                    </Button>
+                  ) : (
+                    <Text>
+                      <Text color={LOOK[one.status].color}>● </Text>
+                      <Text bold>{one.name}</Text>
+                      {one.isSelf && <Text dimColor> (esta)</Text>}
+                    </Text>
+                  )}
                   <Text dimColor>
                     {'  '}
                     {baseName(one.cwd)} · {LOOK[one.status].label}
