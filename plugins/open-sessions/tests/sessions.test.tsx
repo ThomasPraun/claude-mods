@@ -171,6 +171,8 @@ test('pressing a desktop chat opens it with the link that finds any session', as
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  // The desktop paints a Button's content in its own color: the status dot must sit outside it.
+  expect((await ui.find({ key: 'open:MacTest/ork' }))?.text).not.toContain('●')
   await ui.press({ key: 'open:MacTest/ork' })
   expect(world.runs).toContainEqual(['open', 'claude://code/continue?session=local_abc-123'])
   await ui.unmount()

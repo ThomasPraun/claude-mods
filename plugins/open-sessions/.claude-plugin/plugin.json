@@ -1,6 +1,6 @@
 {
   "name": "open-sessions",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "Pane listing this PC's Claude Code sessions and the account's Remote Control sessions, and whether each is free, busy or waiting on you",
   "license": "MIT",
   "types": "./types/index.d.ts"

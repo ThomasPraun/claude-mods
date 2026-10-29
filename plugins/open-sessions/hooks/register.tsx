@@ -85,7 +85,7 @@ const shortModel = (model: string) => {
   return model.replace(/\s*\(.*context\)\s*$/i, '')
 }
 
-const BAR_WIDTH = 10
+const BAR_WIDTH = 20
 const DAYS = ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb']
 const LIMIT_LABELS: Record<string, string> = { five_hour: '5 h', seven_day: '7 días' }
 
@@ -546,18 +546,19 @@ export const register: Register = on => {
       const canOpen = (isLocal && !one.isSelf) || one.remoteId !== undefined
       const since = formatSince(one.since, now)
       const waitingFor = one.waitingFor === undefined ? undefined : (WAITING_FOR[one.waitingFor] ?? one.waitingFor)
+      // The desktop draws a Button in its own color, so the colored dot and marks sit outside it.
       const name = (
-        <Text wrap="truncate-end">
-          <Text color={LOOK[one.status].color}>● </Text>
-          <Text bold>{one.name}</Text>
-          {one.isSelf && <Text color={GREY}> (esta)</Text>}
-          {isUnseen(one) && <Text color={GREEN}> ✓ terminó</Text>}
+        <Text bold wrap="truncate-end">
+          {one.name}
         </Text>
       )
 
       return (
         <Box key={`row:${sessionKey(one)}`} flexDirection="column">
-          <Box flexDirection="row" gap={1}>
+          <Box flexDirection="row">
+            <Box flexShrink={0}>
+              <Text color={LOOK[one.status].color}>● </Text>
+            </Box>
             <Box flexShrink={1}>
               {canOpen || isUnseen(one) ? (
                 <Button
@@ -573,6 +574,12 @@ export const register: Register = on => {
               ) : (
                 name
               )}
+            </Box>
+            <Box flexShrink={0}>
+              <Text>
+                {one.isSelf && <Text color={GREY}> (esta)</Text>}
+                {isUnseen(one) && <Text color={GREEN}> ✓ terminó</Text>}{' '}
+              </Text>
             </Box>
             <Box flexShrink={0}>
               <Button
@@ -607,30 +614,25 @@ export const register: Register = on => {
       )
     }
 
+    // Two lines so a narrow pane never splits the figures: label and value, then the bar.
     const meter = (label: string, used: number | null, value: string, detail?: string) => {
       const filled =
         used === null ? 0 : Math.min(BAR_WIDTH, Math.max(0, Math.round((used * BAR_WIDTH) / 100)))
       const color = used === null ? GREY : levelColor(used)
 
       return (
-        <Box key={`meter:${label}`} flexDirection="row" gap={1}>
-          <Box width={8} flexShrink={0}>
-            <Text color={GREY}>{label}</Text>
-          </Box>
-          <Box flexShrink={0}>
-            <Text mono>
-              <Text color={color}>{'▰'.repeat(filled)}</Text>
-              <Text color={GREY}>{'▱'.repeat(BAR_WIDTH - filled)}</Text>
+        <Box key={`meter:${label}`} flexDirection="column">
+          <Text wrap="truncate-end">
+            <Text color={GREY}>{label} · </Text>
+            <Text bold color={color}>
+              {value}
             </Text>
-          </Box>
-          <Box flexShrink={1}>
-            <Text wrap="truncate-end">
-              <Text bold color={color}>
-                {value}
-              </Text>
-              {detail !== undefined && <Text color={GREY}> {detail}</Text>}
-            </Text>
-          </Box>
+            {detail !== undefined && <Text color={GREY}> · {detail}</Text>}
+          </Text>
+          <Text mono>
+            <Text color={color}>{'▰'.repeat(filled)}</Text>
+            <Text color={GREY}>{'▱'.repeat(BAR_WIDTH - filled)}</Text>
+          </Text>
         </Box>
       )
     }
@@ -653,7 +655,7 @@ export const register: Register = on => {
 
             return (
               <Box key={sectionId} flexDirection="column">
-                {header(sectionId, name === host ? `${name} · esta PC` : name, [
+                {header(sectionId, name === host ? 'Esta PC' : name, [
                   ...(['waiting', 'busy', 'idle'] as const).map(status => ({
                     count: ofHost.filter(one => one.status === status).length,
                     color: LOOK[status].color,
