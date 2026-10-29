@@ -4,6 +4,24 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-10-29
+
+### Changed
+
+- Subagents and usage sit together in a card at the bottom of the pane.
+- A copy icon right after each session's name replaces the "copiar" word.
+- Status colors are fixed hex values: the desktop pane drew some theme colors as white.
+- Usage labels keep a fixed width, so "5 h" and "7 días" no longer wrap.
+- The PC name drops macOS's `.local` suffix; the waiting reason is shown in Spanish.
+
+### Fixed
+
+- Pressing a desktop chat opens it: the link used before only opened chats waiting on you.
+- Sessions starting together no longer create one gist each: every PC uses the oldest, and a
+  session that lost the race deletes the empty gist it made.
+- Sessions of the same PC no longer all rewrite the gist; one write per change is enough.
+- The GitHub error only shows after three failed polls in a row, with GitHub's reason.
+
 ## [0.7.0] - 2026-10-29
 
 ### Added

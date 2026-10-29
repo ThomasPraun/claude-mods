@@ -18,13 +18,25 @@ const PANE = {
 const NOW = 1_800_000_000_000
 const SESSIONS_DIR = '/Users/ana/.claude/sessions'
 
-type FakeSession = { pid: number; sessionId: string; name: string; cwd: string; status: string; statusUpdatedAt: number }
+type FakeSession = {
+  pid: number
+  sessionId: string
+  name: string
+  cwd: string
+  status: string
+  statusUpdatedAt: number
+  hostSessionId?: string
+  entrypoint?: string
+}
+
+type Gist = { id: string; description: string; created_at: string }
 
 // The machine beneath the mod: session files, a live process for each, no gh, and what it played.
-const machine = (on: On, sessions: FakeSession[]) => {
+const machine = (on: On, sessions: FakeSession[], gists?: Gist[]) => {
   const files = new Map(sessions.map(one => [`${SESSIONS_DIR}/${one.pid}.json`, one]))
   const toasts: string[] = []
   const sounds: string[] = []
+  const runs: string[][] = []
   let marker = ''
 
   on('command.register', () => ({ value: { command: 'sesiones' } }))
@@ -59,7 +71,18 @@ const machine = (on: On, sessions: FakeSession[]) => {
     return { value: undefined }
   })
   on('process.run', (_$, e) => {
-    const [command] = (e as { argv: string[] }).argv
+    const argv = [...(e as { argv: string[] }).argv]
+    runs.push(argv)
+    const [command] = argv
+    const ok = (stdout: string) => ({
+      value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+    })
+    if (command === 'gh' && gists !== undefined) {
+      if (argv[2] === 'gists?per_page=100') return ok(JSON.stringify(gists))
+      if (argv[2]?.startsWith('gists/')) return ok(JSON.stringify({ files: {} }))
+      return ok('{}')
+    }
+    if (command === 'open') return ok('')
     if (command === 'hostname') return { value: { exitCode: 0, stdout: 'MacTest\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     if (command === 'kill') return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     if (command === 'grep') return { value: { exitCode: 0, stdout: '"aiTitle":"Arreglar login"\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
@@ -80,7 +103,7 @@ const machine = (on: On, sessions: FakeSession[]) => {
     if (one) files.set(path, { ...one, status, statusUpdatedAt: at })
   }
 
-  return { toasts, sounds, setStatus }
+  return { toasts, sounds, runs, setStatus }
 }
 
 const orkestra: FakeSession = {
@@ -144,4 +167,30 @@ test('a session that starts waiting toasts and plays the waiting sound', async (
   await clock.advance(3000)
   expect(world.toasts.some(text => text.includes('te espera'))).toBe(true)
   expect(world.sounds).toEqual(['sounds/waiting.wav'])
+})
+
+test('pressing a desktop chat opens it with the link that finds any session', async ($, on) => {
+  mock.clock(on, { now: NOW })
+  const world = machine(on, [
+    { ...orkestra, entrypoint: 'claude-desktop', hostSessionId: 'local_abc-123', status: 'idle' },
+  ])
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'open:MacTest/ork' })
+  expect(world.runs).toContainEqual(['open', 'claude://code/continue?session=local_abc-123'])
+  await ui.unmount()
+})
+
+test('with two gists of the same name every PC writes to the oldest', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  const world = machine(on, [orkestra], [
+    { id: 'newer', description: 'claude-open-sessions', created_at: '2026-10-29T16:46:11Z' },
+    { id: 'older', description: 'claude-open-sessions', created_at: '2026-10-29T16:40:00Z' },
+  ])
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await clock.settle()
+
+  const patched = world.runs.filter(argv => argv.includes('PATCH')).map(argv => argv[4])
+  expect(patched).toEqual(['gists/older'])
 })

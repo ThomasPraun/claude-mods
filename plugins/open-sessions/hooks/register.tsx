@@ -57,17 +57,24 @@ const collapsed = atom({ plugin: 'open-sessions', key: 'collapsed' } as const, {
   shape: 'collapsed-1',
 })
 
+// Hex rather than theme names: the desktop pane draws some theme names (warning, suggestion) as plain text.
+const RED = '#e5786d'
+const ORANGE = '#d7875f'
+const BLUE = '#6aa6e8'
+const GREEN = '#5fd75f'
+const GREY = '#7a7a7a'
+
 const ACTIVE_AGENT = new Set(['pending', 'running', 'waiting'])
 // Finished subagents stay listed, dim, up to this many of the most recent.
 const MAX_FINISHED_AGENTS = 5
 const AGENT_LOOK: Record<string, { label: string; color: string }> = {
-  pending: { label: 'en cola', color: 'inactive' },
-  running: { label: 'trabajando', color: 'warning' },
-  waiting: { label: 'te espera', color: 'error' },
-  idle: { label: 'en pausa', color: 'suggestion' },
-  completed: { label: 'terminado', color: 'success' },
-  failed: { label: 'falló', color: 'error' },
-  killed: { label: 'detenido', color: 'inactive' },
+  pending: { label: 'en cola', color: GREY },
+  running: { label: 'trabajando', color: ORANGE },
+  waiting: { label: 'te espera', color: RED },
+  idle: { label: 'en pausa', color: BLUE },
+  completed: { label: 'terminado', color: GREEN },
+  failed: { label: 'falló', color: RED },
+  killed: { label: 'detenido', color: GREY },
 }
 
 // `claude-opus-5-5[1m]` → `Opus 5.5`; unknown shapes pass through without a `(… context)` suffix.
@@ -80,12 +87,12 @@ const shortModel = (model: string) => {
   return model.replace(/\s*\(.*context\)\s*$/i, '')
 }
 
-const BAR_WIDTH = 14
+const BAR_WIDTH = 10
 const DAYS = ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb']
-const LIMIT_LABELS: Record<string, string> = { five_hour: '5 horas', seven_day: '7 días' }
+const LIMIT_LABELS: Record<string, string> = { five_hour: '5 h', seven_day: '7 días' }
 
 // Percent used: under 50 is fine, under 80 is a warning, the rest is near the limit.
-const levelColor = (used: number) => (used >= 80 ? 'error' : used >= 50 ? 'warning' : 'success')
+const levelColor = (used: number) => (used >= 80 ? RED : used >= 50 ? ORANGE : GREEN)
 
 const formatSince = (since: number | undefined, now: number) => {
   if (since === undefined) return undefined
@@ -121,9 +128,17 @@ const toUsageView = (context: { percent?: number | null; window: number }, limit
 
 const ORDER: Record<SessionStatus, number> = { waiting: 0, busy: 1, idle: 2 }
 const LOOK: Record<SessionStatus, { label: string; color: string }> = {
-  waiting: { label: 'te espera', color: 'error' },
-  busy: { label: 'ocupada', color: 'warning' },
-  idle: { label: 'libre', color: 'suggestion' },
+  waiting: { label: 'te espera', color: RED },
+  busy: { label: 'ocupada', color: ORANGE },
+  idle: { label: 'libre', color: BLUE },
+}
+
+// What a session waits on, as Claude Code names it, in the pane's language.
+const WAITING_FOR: Record<string, string> = {
+  'input needed': 'necesita respuesta',
+  'dialog open': 'diálogo abierto',
+  'worker request': 'pedido de un worker',
+  'sandbox request': 'permiso de sandbox',
 }
 
 const toStatus = (raw: unknown): SessionStatus =>
@@ -171,7 +186,7 @@ const copyName = async ($: EngineInterface, one: OpenSession, surface: RenderSur
 const goToSession = async ($: EngineInterface, one: OpenSession) => {
   try {
     if (one.hostSessionId) {
-      await openUrl($, `claude://code/needs-input?session=${encodeURIComponent(one.hostSessionId)}`)
+      await openUrl($, `claude://code/continue?session=${encodeURIComponent(one.hostSessionId)}`)
       return
     }
     const { exitCode, stdout } = await $.process.run(['herdr', 'agent', 'list'], { timeoutMs: 5000 })
@@ -252,7 +267,7 @@ export const register: Register = on => {
       .run(['hostname'], { timeoutMs: 5000 })
       .then(({ stdout }) => stdout.trim())
       .catch(() => '')
-      .then(name => name || 'esta PC')
+      .then(name => name.replace(/\.local$/, '') || 'esta PC')
     const hostFile = `${host.replace(/[^A-Za-z0-9._-]/g, '_')}.json`
 
     let local: OpenSession[] = []
@@ -405,14 +420,18 @@ export const register: Register = on => {
       return JSON.parse(stdout)
     }
 
+    type GistListing = { id: string; description: string | null; created_at: string }
+
+    // Sessions starting together can each create a gist; every PC settles on the oldest one.
+    const canonicalGist = (gists: GistListing[]) =>
+      gists
+        .filter(gist => gist.description === GIST_DESCRIPTION)
+        .sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id))[0]
+
     const findOrCreateGist = async (): Promise<string> => {
-      const gists: Array<{ id: string; description: string | null }> = await gh([
-        'api',
-        'gists?per_page=100',
-      ])
-      const found = gists.find(gist => gist.description === GIST_DESCRIPTION)
+      const found = canonicalGist(await gh(['api', 'gists?per_page=100']))
       if (found) return found.id
-      const created: { id: string } = await gh(
+      const created: GistListing = await gh(
         ['api', '-X', 'POST', 'gists', '--input', '-'],
         JSON.stringify({
           description: GIST_DESCRIPTION,
@@ -424,12 +443,14 @@ export const register: Register = on => {
           },
         }),
       )
-      return created.id
+      const winner = canonicalGist(await gh(['api', 'gists?per_page=100'])) ?? created
+      // Lost the race: the gist this session just made holds nothing yet, so it goes.
+      if (winner.id !== created.id) await gh(['api', '-X', 'DELETE', `gists/${created.id}`]).catch(() => undefined)
+      return winner.id
     }
 
     let gistId: string | undefined
-    let lastWritten = ''
-    let lastWriteAt = 0
+    let failures = 0
     let isPollingRemote = false
     const pollRemote = async () => {
       if (isPollingRemote) return
@@ -437,43 +458,51 @@ export const register: Register = on => {
       try {
         gistId ??= await findOrCreateGist()
         const now = await $.clock.now()
+        const gist: { files: Record<string, { filename: string; content?: string }> } = await gh([
+          'api',
+          `gists/${gistId}`,
+        ])
+        const reports: HostReport[] = []
+        for (const file of Object.values(gist.files)) {
+          if (!file.filename.endsWith('.json') || !file.content) continue
+          try {
+            reports.push(JSON.parse(file.content))
+          } catch {
+            // A file mid-write: read it on the next poll.
+          }
+        }
+
         const mine = local.map(({ isSelf: _, ...one }) => one)
-        const mineText = JSON.stringify(mine)
-        if (mineText !== lastWritten || now - lastWriteAt > HEARTBEAT_MS) {
+        // Every session of this PC runs this; one already wrote the same list, so the rest skip.
+        const written = reports.find(report => report.host === host)
+        const isCurrent =
+          written !== undefined &&
+          JSON.stringify(written.sessions) === JSON.stringify(mine) &&
+          now - written.updatedAt < HEARTBEAT_MS
+        if (!isCurrent) {
           const report = JSON.stringify({ host, updatedAt: now, sessions: mine })
           await gh(
             ['api', '-X', 'PATCH', `gists/${gistId}`, '--input', '-'],
             JSON.stringify({ files: { [hostFile]: { content: report } } }),
           )
-          lastWritten = mineText
-          lastWriteAt = now
         }
-        const gist: { files: Record<string, { filename: string; content?: string }> } = await gh([
-          'api',
-          `gists/${gistId}`,
-        ])
-        const others: OpenSession[] = []
-        for (const file of Object.values(gist.files)) {
-          if (file.filename === hostFile || !file.filename.endsWith('.json') || !file.content) continue
-          try {
-            const report: HostReport = JSON.parse(file.content)
-            if (now - report.updatedAt > STALE_MS) continue
-            others.push(
-              ...report.sessions
-                .map(one => ({ ...one, host: report.host, isSelf: false }))
-                .sort(byStatus),
-            )
-          } catch {
-            // Another PC's file mid-write: read it on the next poll.
-          }
-        }
-        remote = others
+
+        remote = reports
+          .filter(report => report.host !== host && now - report.updatedAt <= STALE_MS)
+          .flatMap(report =>
+            report.sessions.map(one => ({ ...one, host: report.host, isSelf: false })).sort(byStatus),
+          )
+        failures = 0
         note = undefined
       } catch (error) {
-        const isMissing = String(error).includes('ENOENT') || String(error).includes('not found')
-        note = isMissing
-          ? 'Sin GitHub CLI (gh): solo se ven las sesiones de esta PC.'
-          : 'No se pudo sincronizar con GitHub; reintentando.'
+        failures += 1
+        const reason = String(error instanceof Error ? error.message : error).split('\n')[0] ?? ''
+        if (reason.includes('ENOENT') || reason.includes('command not found')) {
+          note = 'Sin GitHub CLI (gh): solo se ven las sesiones de esta PC.'
+        } else if (failures >= 3) {
+          // One failed poll is usually a network blip; only a streak is worth showing.
+          note = `No se pueden ver tus otras PCs: GitHub respondió "${reason.slice(0, 80)}".`
+        }
       } finally {
         isPollingRemote = false
         await publish()
@@ -509,199 +538,228 @@ export const register: Register = on => {
     const marks = await read($, unseen)
     const now = await $.clock.now()
     const hosts = [host, ...new Set(sessions.map(one => one.host).filter(name => name !== host))]
+    const isUnseen = (one: OpenSession) => marks[sessionKey(one)] === true
+    const toggle = (id: string) => () => void update($, collapsed, all => ({ ...all, [id]: !all[id] }))
 
-    const header = (
-      id: string,
-      title: string,
-      summary?: string,
-      counts: Array<{ count: number; color: string; glyph?: string }> = [],
-    ) => (
-      <Button
-        key={`toggle:${id}`}
-        plain
-        onPress={() => void update($, collapsed, all => ({ ...all, [id]: !all[id] }))}
-      >
-        <Text weight="semibold">
-          {folded[id] ? '▸' : '▾'} {title}
-        </Text>
-        {summary !== undefined && <Text dimColor> · {summary}</Text>}
-        {counts
-          .filter(({ count }) => count > 0)
-          .map(({ count, color, glyph = '●' }) => (
-            <Text color={color}>
-              {' '}
-              {glyph}
-              {count}
+    const header = (id: string, title: string, counts: Array<{ count: number; color: string; glyph: string }> = []) => (
+      <Box key={`header:${id}`} flexDirection="row" gap={1}>
+        <Box flexShrink={1}>
+          <Button key={`toggle:${id}`} plain onPress={toggle(id)}>
+            <Text weight="semibold" wrap="truncate-end">
+              {folded[id] ? '▸' : '▾'} {title}
             </Text>
-          ))}
-      </Button>
+          </Button>
+        </Box>
+        <Box flexShrink={0}>
+          <Text>
+            {counts
+              .filter(({ count }) => count > 0)
+              .map(({ count, color, glyph }) => (
+                <Text color={color}>
+                  {glyph}
+                  {count}{' '}
+                </Text>
+              ))}
+          </Text>
+        </Box>
+      </Box>
     )
 
-    const statusCounts = (list: OpenSession[]) =>
-      (['waiting', 'busy', 'idle'] as const).map(status => ({
-        count: list.filter(one => one.status === status).length,
-        color: LOOK[status].color,
-      }))
-
-    const meter = (label: string, used: number | null, value: string, detail?: string) => {
-      const filled =
-        used === null ? 0 : Math.min(BAR_WIDTH, Math.max(0, Math.round((used * BAR_WIDTH) / 100)))
+    const sessionRow = (one: OpenSession, isLocal: boolean) => {
+      const canOpen = isLocal && !one.isSelf
+      const since = formatSince(one.since, now)
+      const waitingFor = one.waitingFor === undefined ? undefined : (WAITING_FOR[one.waitingFor] ?? one.waitingFor)
+      const name = (
+        <Text wrap="truncate-end">
+          <Text color={LOOK[one.status].color}>● </Text>
+          <Text bold>{one.name}</Text>
+          {one.isSelf && <Text color={GREY}> (esta)</Text>}
+          {isUnseen(one) && <Text color={GREEN}> ✓ terminó</Text>}
+        </Text>
+      )
 
       return (
-        <Box key={`meter:${label}`} flexDirection="row" gap={1}>
-          <Text dimColor>{label.padEnd(8)}</Text>
-          <Text mono>
-            <Text color={used === null ? 'inactive' : levelColor(used)}>{'▰'.repeat(filled)}</Text>
-            <Text color="inactive">{'▱'.repeat(BAR_WIDTH - filled)}</Text>
-          </Text>
-          <Text>
-            <Text bold color={used === null ? 'inactive' : levelColor(used)}>
-              {value}
+        <Box key={`row:${sessionKey(one)}`} flexDirection="column">
+          <Box flexDirection="row" gap={1}>
+            <Box flexShrink={1}>
+              {canOpen || isUnseen(one) ? (
+                <Button
+                  key={`open:${sessionKey(one)}`}
+                  plain
+                  onPress={() =>
+                    // Another PC's session cannot be opened from here: pressing only clears its mark.
+                    void markSeen($, one).then(() => (canOpen ? goToSession($, one) : undefined))
+                  }
+                >
+                  {name}
+                </Button>
+              ) : (
+                name
+              )}
+            </Box>
+            <Box flexShrink={0}>
+              <Button
+                key={`copy:${sessionKey(one)}`}
+                label="⧉"
+                plain
+                dimColor
+                onPress={press => void copyName($, one, press.surface)}
+              />
+            </Box>
+          </Box>
+          {one.title !== undefined && (
+            <Text wrap="truncate-end" italic>
+              {'  '}
+              {one.title}
             </Text>
-            {detail !== undefined && <Text dimColor> {detail}</Text>}
+          )}
+          <Text color={GREY} wrap="truncate-end">
+            {'  '}
+            {[
+              baseName(one.cwd),
+              waitingFor !== undefined && one.status === 'waiting'
+                ? `${LOOK[one.status].label} (${waitingFor})`
+                : LOOK[one.status].label,
+              since,
+              one.entrypoint === 'claude-desktop' ? 'app' : 'terminal',
+            ]
+              .filter(part => part !== undefined)
+              .join(' · ')}
           </Text>
         </Box>
       )
     }
 
+    const meter = (label: string, used: number | null, value: string, detail?: string) => {
+      const filled =
+        used === null ? 0 : Math.min(BAR_WIDTH, Math.max(0, Math.round((used * BAR_WIDTH) / 100)))
+      const color = used === null ? GREY : levelColor(used)
+
+      return (
+        <Box key={`meter:${label}`} flexDirection="row" gap={1}>
+          <Box width={8} flexShrink={0}>
+            <Text color={GREY}>{label}</Text>
+          </Box>
+          <Box flexShrink={0}>
+            <Text mono>
+              <Text color={color}>{'▰'.repeat(filled)}</Text>
+              <Text color={GREY}>{'▱'.repeat(BAR_WIDTH - filled)}</Text>
+            </Text>
+          </Box>
+          <Box flexShrink={1}>
+            <Text wrap="truncate-end">
+              <Text bold color={color}>
+                {value}
+              </Text>
+              {detail !== undefined && <Text color={GREY}> {detail}</Text>}
+            </Text>
+          </Box>
+        </Box>
+      )
+    }
+
     const activeAgents = agents.filter(agent => ACTIVE_AGENT.has(agent.status)).length
-    const fiveHour = limits.find(limit => limit.kind === 'five_hour')
-    const usageSummary = [
-      ctxPercent === null ? undefined : `ctx ${ctxPercent}%`,
-      fiveHour === undefined ? undefined : `5h ${Math.max(0, Math.round(100 - fiveHour.percentUsed))}% libre`,
-    ]
-      .filter(part => part !== undefined)
-      .join(' · ')
+    const shownAgents = agents.filter(agent => !folded.agents || agent.status === 'waiting')
 
     return (
-      <Box flexDirection="column" gap={1}>
-        {note !== undefined && <Text dimColor>{note}</Text>}
-        {hosts.map(name => {
-          const ofHost = sessions.filter(one => one.host === name)
-          const sectionId = `host:${name}`
-          const isUnseen = (one: OpenSession) => marks[sessionKey(one)] === true
-          // Folding hides only what needs nothing: a session waiting or finished unseen always shows.
-          const shown = folded[sectionId]
-            ? ofHost.filter(one => one.status === 'waiting' || isUnseen(one))
-            : ofHost
+      // Fills the pane so the subagents and usage card sit at its bottom.
+      <Box flexDirection="column" justifyContent="space-between" minHeight={e.props.scroll.bodyRows}>
+        <Box key="sessions" flexDirection="column" gap={1}>
+          {note !== undefined && <Text color={GREY}>{note}</Text>}
+          {hosts.map(name => {
+            const ofHost = sessions.filter(one => one.host === name)
+            const sectionId = `host:${name}`
+            // Folding hides only what needs nothing: a session waiting or finished unseen always shows.
+            const shown = folded[sectionId]
+              ? ofHost.filter(one => one.status === 'waiting' || isUnseen(one))
+              : ofHost
 
-          return (
-            <Box key={sectionId} flexDirection="column">
-              {header(
-                sectionId,
-                name === host ? `${name} (esta PC)` : name,
-                ofHost.length === 0 ? 'sin sesiones' : undefined,
-                [
-                  ...statusCounts(ofHost),
-                  { count: ofHost.filter(isUnseen).length, color: 'success', glyph: '✓' },
-                ],
-              )}
-              {!folded[sectionId] && ofHost.length === 0 && (
-                <Text dimColor>{'  '}Sin sesiones abiertas.</Text>
-              )}
-              {shown.map(one => (
-                  <Box key={`row:${one.host}/${one.sessionId}`} flexDirection="column">
-                    <Box flexDirection="row" gap={1}>
-                      {name === host && !one.isSelf ? (
-                        <Button
-                          key={one.sessionId}
-                          plain
-                          onPress={() => void markSeen($, one).then(() => goToSession($, one))}
-                        >
-                          <Text color={LOOK[one.status].color}>● </Text>
-                          <Text bold>{one.name}</Text>
-                          {isUnseen(one) && <Text color="success"> ✓ terminó</Text>}
-                        </Button>
-                      ) : isUnseen(one) ? (
-                        // Another PC's session cannot be opened from here: pressing only clears the mark.
-                        <Button key={one.sessionId} plain onPress={() => void markSeen($, one)}>
-                          <Text color={LOOK[one.status].color}>● </Text>
-                          <Text bold>{one.name}</Text>
-                          <Text color="success"> ✓ terminó</Text>
-                        </Button>
-                      ) : (
-                        <Text>
-                          <Text color={LOOK[one.status].color}>● </Text>
-                          <Text bold>{one.name}</Text>
-                          {one.isSelf && <Text dimColor> (esta)</Text>}
-                        </Text>
-                      )}
-                      <Button
-                        key={`copy:${one.host}/${one.sessionId}`}
-                        label="copiar"
-                        plain
-                        dimColor
-                        onPress={press => void copyName($, one, press.surface)}
-                      />
-                    </Box>
-                    {one.title !== undefined && (
-                      <Text wrap="truncate-end" italic>
-                        {'  '}
-                        {one.title}
-                      </Text>
-                    )}
-                    <Text dimColor>
-                      {'  '}
-                      {baseName(one.cwd)} · {LOOK[one.status].label}
-                      {one.status === 'waiting' && one.waitingFor ? ` (${one.waitingFor})` : ''}
-                      {formatSince(one.since, now) !== undefined ? ` · ${formatSince(one.since, now)}` : ''}
-                      {one.entrypoint === 'claude-desktop' ? ' · app' : ' · terminal'}
-                    </Text>
-                  </Box>
-                ))}
-            </Box>
-          )
-        })}
-        <Text dimColor>{'─'.repeat(BAR_WIDTH + 18)}</Text>
-        {agents.length > 0 && (
-          <Box key="section:agents" flexDirection="column">
-            {header(
-              'agents',
-              'Subagentes',
-              activeAgents > 0 ? `${activeAgents} activos` : 'ninguno activo',
-            )}
-            {agents
-              .filter(agent => !folded.agents || agent.status === 'waiting')
-              .map(agent => {
-                const look = AGENT_LOOK[agent.status] ?? { label: agent.status, color: 'inactive' }
+            return (
+              <Box key={sectionId} flexDirection="column">
+                {header(sectionId, name === host ? `${name} · esta PC` : name, [
+                  ...(['waiting', 'busy', 'idle'] as const).map(status => ({
+                    count: ofHost.filter(one => one.status === status).length,
+                    color: LOOK[status].color,
+                    glyph: '●',
+                  })),
+                  { count: ofHost.filter(isUnseen).length, color: GREEN, glyph: '✓' },
+                ])}
+                {!folded[sectionId] && ofHost.length === 0 && (
+                  <Text color={GREY}>{'  '}Sin sesiones abiertas.</Text>
+                )}
+                {shown.map(one => sessionRow(one, name === host))}
+              </Box>
+            )
+          })}
+        </Box>
+        <Box
+          key="footer"
+          flexDirection="column"
+          gap={1}
+          marginTop={1}
+          paddingX={1}
+          borderStyle="round"
+          borderColor={GREY}
+        >
+          {agents.length > 0 && (
+            <Box key="section:agents" flexDirection="column">
+              {header('agents', activeAgents > 0 ? `Subagentes · ${activeAgents} activos` : 'Subagentes')}
+              {shownAgents.map(agent => {
+                const look = AGENT_LOOK[agent.status] ?? { label: agent.status, color: GREY }
                 const isActive = ACTIVE_AGENT.has(agent.status)
 
                 return (
                   <Box key={`agent:${agent.id}`} flexDirection="column">
-                    <Text wrap="truncate-end" dimColor={!isActive}>
+                    <Text wrap="truncate-end">
                       <Text color={look.color}>● </Text>
-                      <Text bold={isActive}>{agent.label}</Text>
+                      <Text bold={isActive} color={isActive ? undefined : GREY}>
+                        {agent.label}
+                      </Text>
                     </Text>
-                    <Text dimColor wrap="truncate-end">
+                    <Text color={GREY} wrap="truncate-end">
                       {'  '}
-                      {agent.type}
-                      {agent.model !== undefined ? ` · ${agent.model}` : ''} · {look.label}
+                      {[agent.type, agent.model, look.label].filter(Boolean).join(' · ')}
                     </Text>
                   </Box>
                 )
               })}
-          </Box>
-        )}
-        <Box key="section:usage" flexDirection="column">
-          {header('usage', 'Uso', folded.usage && usageSummary !== '' ? usageSummary : undefined)}
-          {!folded.usage &&
-            meter(
-              'Contexto',
-              ctxPercent,
-              ctxPercent === null ? '--' : `${ctxPercent}%`,
-              window > 0 ? `de ${formatWindow(window)}` : undefined,
-            )}
-          {!folded.usage &&
-            limits.map(limit => {
-              const reset = formatReset(limit)
+            </Box>
+          )}
+          <Box key="section:usage" flexDirection="column">
+            {header('usage', 'Uso')}
+            {!folded.usage &&
+              meter(
+                'Contexto',
+                ctxPercent,
+                ctxPercent === null ? '--' : `${ctxPercent}%`,
+                window > 0 ? `de ${formatWindow(window)}` : undefined,
+              )}
+            {!folded.usage &&
+              limits.map(limit => {
+                const reset = formatReset(limit)
 
-              return meter(
-                LIMIT_LABELS[limit.kind] ?? limit.kind,
-                limit.percentUsed,
-                `${Math.max(0, Math.round(100 - limit.percentUsed))}% libre`,
-                reset !== undefined ? `↺ ${reset}` : undefined,
-              )
-            })}
+                return meter(
+                  LIMIT_LABELS[limit.kind] ?? limit.kind,
+                  limit.percentUsed,
+                  `${Math.max(0, Math.round(100 - limit.percentUsed))}% libre`,
+                  reset !== undefined ? `↺ ${reset}` : undefined,
+                )
+              })}
+            {folded.usage && (
+              <Text color={GREY} wrap="truncate-end">
+                {'  '}
+                {[
+                  ctxPercent === null ? undefined : `ctx ${ctxPercent}%`,
+                  ...limits.map(
+                    limit =>
+                      `${LIMIT_LABELS[limit.kind] ?? limit.kind} ${Math.max(0, Math.round(100 - limit.percentUsed))}%`,
+                  ),
+                ]
+                  .filter(Boolean)
+                  .join(' · ')}
+              </Text>
+            )}
+          </Box>
         </Box>
       </Box>
     )
