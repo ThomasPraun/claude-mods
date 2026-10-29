@@ -1,22 +1,38 @@
 # open-sessions
 
-Mod para Claude Code que muestra, en un panel junto al chat, todas las sesiones de Claude Code
-abiertas en tus PCs (macOS, Windows y Linux) y el estado de cada una:
+Mod para Claude Code que muestra, en un panel junto al chat, las sesiones de Claude Code abiertas
+en tu PC y las de tu cuenta con **Remote Control** activo en cualquier otra PC, con el estado de
+cada una:
 
 - 🔴 **te espera**: pide un permiso o una decisión (con el motivo cuando lo hay)
 - 🟠 **ocupada**: está trabajando
 - 🔵 **libre**: terminó su turno
 
-Cada sesión muestra su nombre, el título del chat, la carpeta, el estado y cuánto tiempo lleva
-en él ("ocupada · 12 min"). Las sesiones aparecen agrupadas por PC. El comando `/sesiones`
-vuelve a abrir el panel si lo cerraste.
+Cada sesión muestra su nombre, el título del chat, la carpeta o el repositorio, el estado y cuánto
+tiempo lleva en él ("ocupada · 12 min"). El comando `/sesiones` vuelve a abrir el panel si lo
+cerraste.
 
-Al tocar una sesión de la misma PC se abre: las de la app de escritorio en su chat, y las de la
-terminal enfocando su panel de [herdr](https://herdr.dev) (si corren dentro de herdr). Las
-sesiones de otras PCs solo se muestran.
+Al tocar una sesión se abre: las de la app de escritorio y las de Remote Control en su chat de la
+app, y las de la terminal enfocando su panel de [herdr](https://herdr.dev) (si corren dentro de
+herdr).
 
-El icono **⧉** junto al nombre de cada sesión copia ese nombre. Pegado en otra conversación ("pásale
-esto a orkestra-37"), Claude puede enviarle un mensaje a esa sesión.
+El icono **⧉** junto al nombre de cada sesión copia ese nombre. Pegado en otra conversación
+("pásale esto a orkestra-37"), Claude puede enviarle un mensaje a esa sesión.
+
+## Sesiones de otras PCs
+
+Una sesión de otra PC aparece en el grupo **Remote Control** solo si tiene Remote Control activo
+y conectado: así decides en cada PC qué se ve desde las demás. El mod las lee cada 30 segundos de
+tu cuenta de Anthropic, con la sesión con la que ya iniciaste Claude Code (el mod nunca ve tu
+credencial).
+
+- La cuenta no dice en qué PC corre cada una, así que se agrupan juntas y muestran su
+  repositorio.
+- Si una sesión de esta PC también tiene Remote Control, se muestra una sola vez, en esta PC.
+- Usa el mismo servicio interno que Claude Code para listar sesiones, que no está documentado:
+  una actualización de Claude Code puede cambiarlo. Si deja de responder, el panel lo avisa y
+  sigue mostrando las sesiones de esta PC.
+- Solo funciona con sesión iniciada en claude.ai, no con una API key ni otro proveedor.
 
 ## Avisos
 
@@ -32,38 +48,13 @@ macOS: en Windows y Linux Claude Code no tiene reproductor.
 
 Abajo del todo, en una tarjeta, están **Subagentes** y **Uso**. Si el chat actual lanzó
 subagentes, se muestra cada uno con su tipo, modelo y estado; los terminados quedan atenuados
-(hasta los últimos cinco). **Uso** muestra cuánto contexto lleva la sesión actual y cuánto queda de los
-límites de 5 horas y 7 días de tu cuenta, con la hora en que se reinicia cada uno.
+(hasta los últimos cinco). **Uso** muestra cuánto contexto lleva la sesión actual y cuánto queda
+de los límites de 5 horas y 7 días de tu cuenta, con la hora en que se reinicia cada uno.
 
-Cada sección (cada PC, Subagentes y Uso) se pliega y despliega al tocar su título. El título
-de cada PC cuenta siempre sus sesiones por estado (●🔴 ●🟠 ●🔵 y ✓ las terminadas sin ver), y
-una sección plegada sigue mostrando las sesiones que te esperan o terminaron sin que las vieras,
-para que nunca se te pase una.
-
-## Cómo se comparten las sesiones entre PCs
-
-Cada PC lee sus propias sesiones de `~/.claude/sessions` y las publica en un **Gist secreto**
-de tu cuenta de GitHub (descripción `claude-open-sessions`), que el mod crea la primera vez.
-Cada PC lee del mismo Gist las sesiones de las demás.
-
-- Se sube el nombre de la sesión, el título del chat, la carpeta del proyecto, el estado y desde
-  cuándo, y el nombre de la PC. Nada del contenido de las conversaciones.
-- Las sesiones de las otras PCs se actualizan cada ~15 segundos.
-- Cada cambio de estado se escribe al momento; si nada cambia, la PC escribe cada 5 minutos para
-  decir que sigue encendida. Una PC que lleva 10 minutos sin escribir se oculta.
-- GitHub guarda cada escritura como una revisión del Gist. Si quieres empezar de cero, borra el
-  Gist: el mod crea uno nuevo.
-
-## Requisitos
-
-[GitHub CLI](https://cli.github.com) (`gh`) instalado y con sesión iniciada en la **misma cuenta
-de GitHub** en cada PC:
-
-```bash
-gh auth login
-```
-
-Sin `gh`, el panel muestra solo las sesiones de la PC en la que corre.
+Cada sección (esta PC, Remote Control, Subagentes y Uso) se pliega y despliega al tocar su
+título. El título de cada grupo cuenta siempre sus sesiones por estado (●🔴 ●🟠 ●🔵 y ✓ las
+terminadas sin ver), y un grupo plegado sigue mostrando las sesiones que te esperan o terminaron
+sin que las vieras, para que nunca se te pase una.
 
 ## Instalación
 

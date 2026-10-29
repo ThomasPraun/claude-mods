@@ -12,18 +12,16 @@ import type {
 
 const PANE = 'open-sessions'
 const LOCAL_POLL_MS = 3000
-// GitHub allows 5000 API calls per hour; a read and at most a write every 15 s stays far below.
-const REMOTE_POLL_MS = 15000
-// Each write is a gist revision, so an unchanged PC only rewrites this often to say it is alive.
-const HEARTBEAT_MS = 5 * 60_000
-// A PC that has not written for this long is off or offline: its sessions are hidden.
-const STALE_MS = 10 * 60_000
+const REMOTE_POLL_MS = 30_000
+// Group name for sessions reached through Remote Control: the account API does not say which PC runs them.
+const REMOTE_HOST = 'Remote Control'
+// Undocumented endpoint and beta Claude Code itself uses to list the account's sessions.
+const SESSIONS_URL = 'https://api.anthropic.com/v1/code/sessions?limit=50'
+const SESSIONS_BETA = 'ccr-byoc-2025-07-29'
 // Titles live in transcripts of up to tens of MB, so each is searched at most this often.
 const TITLE_REFRESH_MS = 30_000
 const SOUND_FINISHED = 'sounds/finished.wav'
 const SOUND_WAITING = 'sounds/waiting.wav'
-// Every PC finds the shared secret gist by this description.
-const GIST_DESCRIPTION = 'claude-open-sessions'
 
 const view = atom(
   { plugin: 'open-sessions', key: 'view' } as const,
@@ -149,7 +147,6 @@ const baseName = (path: string) => path.split(/[\\/]/).filter(Boolean).at(-1) ??
 const byStatus = (a: OpenSession, b: OpenSession) =>
   ORDER[a.status] - ORDER[b.status] || a.name.localeCompare(b.name)
 
-type HostReport = { host: string; updatedAt: number; sessions: OpenSession[] }
 
 const openUrl = async ($: EngineInterface, url: string) => {
   if ((await $.env.get('OS')) === 'Windows_NT') {
@@ -185,6 +182,10 @@ const copyName = async ($: EngineInterface, one: OpenSession, surface: RenderSur
 // Desktop sessions open through the app's own claude:// link; terminal sessions only when herdr hosts them.
 const goToSession = async ($: EngineInterface, one: OpenSession) => {
   try {
+    if (one.remoteId) {
+      await openUrl($, `claude://code/${encodeURIComponent(one.remoteId)}`)
+      return
+    }
     if (one.hostSessionId) {
       await openUrl($, `claude://code/continue?session=${encodeURIComponent(one.hostSessionId)}`)
       return
@@ -268,7 +269,6 @@ export const register: Register = on => {
       .then(({ stdout }) => stdout.trim())
       .catch(() => '')
       .then(name => name.replace(/\.local$/, '') || 'esta PC')
-    const hostFile = `${host.replace(/[^A-Za-z0-9._-]/g, '_')}.json`
 
     let local: OpenSession[] = []
     let remote: OpenSession[] = []
@@ -411,98 +411,75 @@ export const register: Register = on => {
       }
     }
 
-    const gh = async (args: string[], stdin?: string) => {
-      const { exitCode, stdout, stderr } = await $.process.run(['gh', ...args], {
-        timeoutMs: 20000,
-        ...(stdin !== undefined && { stdin }),
-      })
-      if (exitCode !== 0) throw new Error(stderr.trim() || `gh exited ${exitCode}`)
-      return JSON.parse(stdout)
+    type RemoteSession = {
+      id: string
+      title?: string
+      status: string
+      connection_status: string
+      environment_kind: string
+      worker_status?: string
+      external_metadata?: {
+        current_branches?: Record<string, string>
+        post_turn_summary?: { needs_action?: string }
+      }
     }
 
-    type GistListing = { id: string; description: string | null; created_at: string }
-
-    // Sessions starting together can each create a gist; every PC settles on the oldest one.
-    const canonicalGist = (gists: GistListing[]) =>
-      gists
-        .filter(gist => gist.description === GIST_DESCRIPTION)
-        .sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id))[0]
-
-    const findOrCreateGist = async (): Promise<string> => {
-      const found = canonicalGist(await gh(['api', 'gists?per_page=100']))
-      if (found) return found.id
-      const created: GistListing = await gh(
-        ['api', '-X', 'POST', 'gists', '--input', '-'],
-        JSON.stringify({
-          description: GIST_DESCRIPTION,
-          public: false,
-          files: {
-            'README.md': {
-              content: 'Estado de las sesiones de Claude Code, escrito por el mod open-sessions.',
-            },
-          },
-        }),
-      )
-      const winner = canonicalGist(await gh(['api', 'gists?per_page=100'])) ?? created
-      // Lost the race: the gist this session just made holds nothing yet, so it goes.
-      if (winner.id !== created.id) await gh(['api', '-X', 'DELETE', `gists/${created.id}`]).catch(() => undefined)
-      return winner.id
+    const toRemoteStatus = (one: RemoteSession): SessionStatus => {
+      if (one.external_metadata?.post_turn_summary?.needs_action) return 'waiting'
+      if (one.worker_status === 'requires_action') return 'waiting'
+      return one.worker_status === undefined || one.worker_status === 'idle' ? 'idle' : 'busy'
     }
 
-    let gistId: string | undefined
-    let failures = 0
+    let remoteFailures = 0
     let isPollingRemote = false
     const pollRemote = async () => {
       if (isPollingRemote) return
       isPollingRemote = true
       try {
-        gistId ??= await findOrCreateGist()
-        const now = await $.clock.now()
-        const gist: { files: Record<string, { filename: string; content?: string }> } = await gh([
-          'api',
-          `gists/${gistId}`,
-        ])
-        const reports: HostReport[] = []
-        for (const file of Object.values(gist.files)) {
-          if (!file.filename.endsWith('.json') || !file.content) continue
-          try {
-            reports.push(JSON.parse(file.content))
-          } catch {
-            // A file mid-write: read it on the next poll.
-          }
-        }
-
-        const mine = local.map(({ isSelf: _, ...one }) => one)
-        // Every session of this PC runs this; one already wrote the same list, so the rest skip.
-        const written = reports.find(report => report.host === host)
-        const isCurrent =
-          written !== undefined &&
-          JSON.stringify(written.sessions) === JSON.stringify(mine) &&
-          now - written.updatedAt < HEARTBEAT_MS
-        if (!isCurrent) {
-          const report = JSON.stringify({ host, updatedAt: now, sessions: mine })
-          await gh(
-            ['api', '-X', 'PATCH', `gists/${gistId}`, '--input', '-'],
-            JSON.stringify({ files: { [hostFile]: { content: report } } }),
-          )
-        }
-
-        remote = reports
-          .filter(report => report.host !== host && now - report.updatedAt <= STALE_MS)
-          .flatMap(report =>
-            report.sessions.map(one => ({ ...one, host: report.host, isSelf: false })).sort(byStatus),
-          )
-        failures = 0
+        const auth = await $.session.authorize()
+        // Signed in with an API key or a third-party provider: no account sessions to list.
+        if (auth === null || auth.kind !== 'bearer') return
+        // The account API wants the organization; the person's own config holds it.
+        const config = JSON.parse(await $.fs.read(`${home}/.claude.json`))
+        const organization: unknown = config?.oauthAccount?.organizationUuid
+        const response = await $.http.fetch(SESSIONS_URL, {
+          auth: auth.handle,
+          headers: {
+            'anthropic-version': '2023-06-01',
+            'anthropic-beta': SESSIONS_BETA,
+            ...(typeof organization === 'string' && { 'x-organization-uuid': organization }),
+          },
+        })
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        const listed: { data?: RemoteSession[] } = JSON.parse(response.text)
+        // This PC's sessions are listed too when they have Remote Control on: drop those by title.
+        const localNames = new Set(local.flatMap(one => [one.name, one.title].filter(Boolean)))
+        remote = (listed.data ?? [])
+          .filter(one => one.environment_kind === 'bridge' && one.status === 'active')
+          .filter(one => one.connection_status === 'connected')
+          .filter(one => !localNames.has(one.title ?? ''))
+          .map(one => {
+            const repo = Object.keys(one.external_metadata?.current_branches ?? {})[0]
+            const needs = one.external_metadata?.post_turn_summary?.needs_action
+            return {
+              sessionId: one.id,
+              remoteId: one.id,
+              name: one.title || one.id,
+              cwd: repo ?? '',
+              status: toRemoteStatus(one),
+              ...(needs ? { waitingFor: needs } : {}),
+              entrypoint: 'remote',
+              host: REMOTE_HOST,
+              isSelf: false,
+            }
+          })
+          .sort(byStatus)
+        remoteFailures = 0
         note = undefined
-      } catch (error) {
-        failures += 1
-        const reason = String(error instanceof Error ? error.message : error).split('\n')[0] ?? ''
-        if (reason.includes('ENOENT') || reason.includes('command not found')) {
-          note = 'Sin GitHub CLI (gh): solo se ven las sesiones de esta PC.'
-        } else if (failures >= 3) {
-          // One failed poll is usually a network blip; only a streak is worth showing.
-          note = `No se pueden ver tus otras PCs: GitHub respondió "${reason.slice(0, 80)}".`
-        }
+      } catch {
+        remoteFailures += 1
+        // One failed request is usually a network blip; only a streak is worth showing.
+        if (remoteFailures >= 3) note = 'No se pueden leer tus sesiones con Remote Control; reintentando.'
       } finally {
         isPollingRemote = false
         await publish()
@@ -566,7 +543,7 @@ export const register: Register = on => {
     )
 
     const sessionRow = (one: OpenSession, isLocal: boolean) => {
-      const canOpen = isLocal && !one.isSelf
+      const canOpen = (isLocal && !one.isSelf) || one.remoteId !== undefined
       const since = formatSince(one.since, now)
       const waitingFor = one.waitingFor === undefined ? undefined : (WAITING_FOR[one.waitingFor] ?? one.waitingFor)
       const name = (
@@ -587,7 +564,7 @@ export const register: Register = on => {
                   key={`open:${sessionKey(one)}`}
                   plain
                   onPress={() =>
-                    // Another PC's session cannot be opened from here: pressing only clears its mark.
+                    // A session seen only through its mark (no app, herdr or Remote Control link) just clears it.
                     void markSeen($, one).then(() => (canOpen ? goToSession($, one) : undefined))
                   }
                 >
@@ -621,7 +598,7 @@ export const register: Register = on => {
                 ? `${LOOK[one.status].label} (${waitingFor})`
                 : LOOK[one.status].label,
               since,
-              one.entrypoint === 'claude-desktop' ? 'app' : 'terminal',
+              one.entrypoint === 'claude-desktop' ? 'app' : one.entrypoint === 'remote' ? 'remoto' : 'terminal',
             ]
               .filter(part => part !== undefined)
               .join(' · ')}

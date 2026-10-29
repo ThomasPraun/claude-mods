@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-10-29
+
+### Added
+
+- A "Remote Control" group with the account's sessions that have Remote Control on and
+  connected, from any PC, read every 30 seconds from the account; pressing one opens it in the
+  app.
+
+### Removed
+
+- GitHub sync: no GitHub CLI, no gist and no GitHub API calls.
+
 ## [0.8.0] - 2026-10-29
 
 ### Changed

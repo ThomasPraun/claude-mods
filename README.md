@@ -4,7 +4,7 @@ Mods para Claude Code.
 
 | Mod | Qué hace |
 | --- | --- |
-| [open-sessions](plugins/open-sessions) | Panel junto al chat con todas las sesiones de Claude Code abiertas en tus PCs, su estado, los subagentes del chat actual y el uso de contexto y límites 5h/7d |
+| [open-sessions](plugins/open-sessions) | Panel junto al chat con las sesiones de Claude Code de tu PC y las de tu cuenta con Remote Control, su estado, los subagentes del chat actual y el uso de contexto y límites 5h/7d |
 | [usage-band](plugins/usage-band) | Línea bajo el prompt con usuario, carpeta, rama, modelo y título del chat; añade el modelo a cada fila de subagente del historial |
 
 ## Instalación

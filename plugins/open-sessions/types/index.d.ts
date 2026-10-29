@@ -12,6 +12,8 @@ export type OpenSession = {
   title?: string
   entrypoint: string
   hostSessionId?: string
+  /** A Remote Control session's id in the account (`cse_…`); absent for this PC's own. */
+  remoteId?: string
   host: string
   isSelf: boolean
 }

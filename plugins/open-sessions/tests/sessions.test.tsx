@@ -29,10 +29,8 @@ type FakeSession = {
   entrypoint?: string
 }
 
-type Gist = { id: string; description: string; created_at: string }
-
-// The machine beneath the mod: session files, a live process for each, no gh, and what it played.
-const machine = (on: On, sessions: FakeSession[], gists?: Gist[]) => {
+// The machine beneath the mod: session files, a live process for each, and what it played.
+const machine = (on: On, sessions: FakeSession[]) => {
   const files = new Map(sessions.map(one => [`${SESSIONS_DIR}/${one.pid}.json`, one]))
   const toasts: string[] = []
   const sounds: string[] = []
@@ -64,6 +62,7 @@ const machine = (on: On, sessions: FakeSession[], gists?: Gist[]) => {
   on('fs.read', (_$, e) => {
     const path = (e as { path: string }).path
     if (path.endsWith('open-sessions-sound.json')) return { value: marker }
+    if (path.endsWith('.claude.json')) return { value: JSON.stringify({ oauthAccount: { organizationUuid: 'org-1' } }) }
     return { value: JSON.stringify(files.get(path)) }
   })
   on('fs.write', (_$, e) => {
@@ -77,16 +76,11 @@ const machine = (on: On, sessions: FakeSession[], gists?: Gist[]) => {
     const ok = (stdout: string) => ({
       value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
     })
-    if (command === 'gh' && gists !== undefined) {
-      if (argv[2] === 'gists?per_page=100') return ok(JSON.stringify(gists))
-      if (argv[2]?.startsWith('gists/')) return ok(JSON.stringify({ files: {} }))
-      return ok('{}')
-    }
     if (command === 'open') return ok('')
     if (command === 'hostname') return { value: { exitCode: 0, stdout: 'MacTest\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     if (command === 'kill') return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     if (command === 'grep') return { value: { exitCode: 0, stdout: '"aiTitle":"Arreglar login"\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
-    return { value: { exitCode: 1, stdout: '', stderr: 'gh: command not found', isStdoutTruncated: false, isStderrTruncated: false } }
+    return { value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on('ui.toast', (_$, e) => {
     toasts.push((e as { text: string }).text)
@@ -182,15 +176,43 @@ test('pressing a desktop chat opens it with the link that finds any session', as
   await ui.unmount()
 })
 
-test('with two gists of the same name every PC writes to the oldest', async ($, on) => {
+
+test('Remote Control sessions of the account show in their own group and open in the app', async ($, on) => {
   const clock = mock.clock(on, { now: NOW })
-  const world = machine(on, [orkestra], [
-    { id: 'newer', description: 'claude-open-sessions', created_at: '2026-10-29T16:46:11Z' },
-    { id: 'older', description: 'claude-open-sessions', created_at: '2026-10-29T16:40:00Z' },
-  ])
+  const world = machine(on, [orkestra])
+  const requests: Array<{ url: string; headers?: Record<string, string> }> = []
+  on('session.authorize', () => ({ value: { handle: 'h1', kind: 'bearer' } }))
+  on('http.fetch', (_$, e) => {
+    const { url, init } = e as { url: string; init?: { headers?: Record<string, string> } }
+    requests.push({ url, ...(init?.headers !== undefined && { headers: init.headers }) })
+    const session = (id: string, title: string, extra: Record<string, unknown>) => ({
+      id,
+      title,
+      status: 'active',
+      connection_status: 'connected',
+      environment_kind: 'bridge',
+      worker_status: 'idle',
+      external_metadata: { current_branches: { 'ana/totem': 'main' } },
+      ...extra,
+    })
+    const data = [
+      session('cse_linux', 'totemIA-Linux', { worker_status: 'running' }),
+      session('cse_gone', 'Vieja', { connection_status: 'disconnected' }),
+      session('cse_archived', 'Archivada', { status: 'archived' }),
+      // This PC's own session, listed again because it has Remote Control on.
+      session('cse_dup', 'orkestra-37', {}),
+    ]
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ data }) } }
+  })
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   await clock.settle()
 
-  const patched = world.runs.filter(argv => argv.includes('PATCH')).map(argv => argv[4])
-  expect(patched).toEqual(['gists/older'])
+  expect(requests[0]?.headers?.['x-organization-uuid']).toBe('org-1')
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /Remote Control/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /totem · ocupada · remoto/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Vieja|Archivada/ })).toBeUndefined()
+  await ui.press({ key: 'open:Remote Control/cse_linux' })
+  expect(world.runs).toContainEqual(['open', 'claude://code/cse_linux'])
+  await ui.unmount()
 })
