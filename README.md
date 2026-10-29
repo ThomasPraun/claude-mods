@@ -14,6 +14,9 @@ Al tocar una sesión de la misma PC se abre: las de la app de escritorio en su c
 terminal enfocando su panel de [herdr](https://herdr.dev) (si corren dentro de herdr). Las
 sesiones de otras PCs solo se muestran.
 
+Abajo, la sección **Uso** muestra cuánto contexto lleva la sesión actual y cuánto queda de los
+límites de 5 horas y 7 días de tu cuenta, con la hora en que se reinicia cada uno.
+
 El botón **copiar** junto a cada sesión copia su nombre. Pegado en otra conversación ("pásale
 esto a orkestra-37"), Claude puede enviarle un mensaje a esa sesión.
 

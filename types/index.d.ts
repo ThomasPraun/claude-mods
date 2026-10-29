@@ -18,8 +18,24 @@ export type SessionsView = {
   note?: string
 }
 
+export type UsageLimit = {
+  /** `five_hour`, `seven_day`, or a gateway's `spend_limit`. */
+  kind: string
+  percentUsed: number
+  /** ISO 8601; absent when the API reported none. */
+  resetsAt?: string
+}
+
+export type UsageView = {
+  /** This session's context fill; null until the first response reports one. */
+  ctxPercent: number | null
+  /** Context window size in tokens. */
+  window: number
+  limits: UsageLimit[]
+}
+
 declare module 'claude-code' {
   interface PluginState {
-    'open-sessions': { view: Shaped<SessionsView> }
+    'open-sessions': { view: Shaped<SessionsView>; usage: Shaped<UsageView> }
   }
 }

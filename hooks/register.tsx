@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderSurface } from 'claude-code'
 
-import type { OpenSession, SessionStatus, SessionsView } from '../types'
+import type { OpenSession, SessionStatus, SessionsView, UsageLimit, UsageView } from '../types'
 
 const PANE = 'open-sessions'
 const LOCAL_POLL_MS = 3000
@@ -18,6 +18,43 @@ const view = atom(
   { host: '', sessions: [] },
   { shape: 'view-1' },
 )
+
+const usage = atom(
+  { plugin: 'open-sessions', key: 'usage' } as const,
+  { ctxPercent: null, window: 0, limits: [] },
+  { shape: 'usage-1' },
+)
+
+const BAR_WIDTH = 14
+const DAYS = ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb']
+const LIMIT_LABELS: Record<string, string> = { five_hour: '5 horas', seven_day: '7 días' }
+
+// Percent used: under 50 is fine, under 80 is a warning, the rest is near the limit.
+const levelColor = (used: number) => (used >= 80 ? 'error' : used >= 50 ? 'warning' : 'success')
+
+const formatWindow = (tokens: number) =>
+  tokens >= 1_000_000 ? `${Math.round(tokens / 1_000_000)}M` : `${Math.round(tokens / 1000)}k`
+
+const pad2 = (n: number) => String(n).padStart(2, '0')
+
+// The 5-hour window resets within the day, so only its time is shown; longer ones add the weekday.
+const formatReset = (limit: UsageLimit) => {
+  if (!limit.resetsAt) return undefined
+  const at = new Date(limit.resetsAt)
+  if (Number.isNaN(at.getTime())) return undefined
+  const time = `${pad2(at.getHours())}:${pad2(at.getMinutes())}`
+  return limit.kind === 'five_hour' ? time : `${DAYS[at.getDay()]} ${time}`
+}
+
+const toUsageView = (context: { percent?: number | null; window: number }, limits: UsageLimit[]): UsageView => ({
+  ctxPercent: context.percent ?? null,
+  window: context.window,
+  limits: limits.map(({ kind, percentUsed, resetsAt }) => ({
+    kind,
+    percentUsed,
+    ...(resetsAt !== undefined && { resetsAt }),
+  })),
+})
 
 const ORDER: Record<SessionStatus, number> = { waiting: 0, busy: 1, idle: 2 }
 const LOOK: Record<SessionStatus, { label: string; color: string }> = {
@@ -99,6 +136,9 @@ export const register: Register = on => {
       description: 'Abre el panel de sesiones de Claude abiertas en tus PCs',
     })
     void $.ui.open({ id: PANE, title: 'Sesiones' })
+
+    const measured = await $.session.usage()
+    await update($, usage, () => toUsageView(measured.context, measured.rateLimits))
 
     const isWindows = (await $.env.get('OS')) === 'Windows_NT'
     const home = (await $.env.get('HOME')) ?? (await $.env.get('USERPROFILE')) ?? ''
@@ -272,6 +312,12 @@ export const register: Register = on => {
     return started
   })
 
+  on('session.measure', async ($, e, next) => {
+    await update($, usage, () => toUsageView(e.context, e.rateLimits))
+
+    return next(e)
+  })
+
   on('command.run', { command: 'sesiones' }, async $ => {
     await $.ui.open({ id: PANE, title: 'Sesiones' })
 
@@ -281,7 +327,28 @@ export const register: Register = on => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Button, Text } = $.ui.resolve(e)
     const { host, sessions, note } = await read($, view)
+    const { ctxPercent, window, limits } = await read($, usage)
     const hosts = [host, ...new Set(sessions.map(one => one.host).filter(name => name !== host))]
+
+    const meter = (label: string, used: number | null, value: string, detail?: string) => {
+      const filled = used === null ? 0 : Math.min(BAR_WIDTH, Math.max(0, Math.round((used * BAR_WIDTH) / 100)))
+
+      return (
+        <Box key={`meter:${label}`} flexDirection="row" gap={1}>
+          <Text dimColor>{label.padEnd(8)}</Text>
+          <Text mono>
+            <Text color={used === null ? 'inactive' : levelColor(used)}>{'▰'.repeat(filled)}</Text>
+            <Text color="inactive">{'▱'.repeat(BAR_WIDTH - filled)}</Text>
+          </Text>
+          <Text>
+            <Text bold color={used === null ? 'inactive' : levelColor(used)}>
+              {value}
+            </Text>
+            {detail !== undefined && <Text dimColor> {detail}</Text>}
+          </Text>
+        </Box>
+      )
+    }
 
     return (
       <Box flexDirection="column" gap={1}>
@@ -330,6 +397,26 @@ export const register: Register = on => {
             </Box>
           )
         })}
+        <Box flexDirection="column">
+          <Text dimColor>{'─'.repeat(BAR_WIDTH + 18)}</Text>
+          <Text weight="semibold">Uso</Text>
+          {meter(
+            'Contexto',
+            ctxPercent,
+            ctxPercent === null ? '--' : `${ctxPercent}%`,
+            window > 0 ? `de ${formatWindow(window)}` : undefined,
+          )}
+          {limits.map(limit => {
+            const reset = formatReset(limit)
+
+            return meter(
+              LIMIT_LABELS[limit.kind] ?? limit.kind,
+              limit.percentUsed,
+              `${Math.max(0, Math.round(100 - limit.percentUsed))}% libre`,
+              reset !== undefined ? `↺ ${reset}` : undefined,
+            )
+          })}
+        </Box>
       </Box>
     )
   })

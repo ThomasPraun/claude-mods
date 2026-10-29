@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-10-29
+
+### Added
+
+- "Uso" section at the bottom of the pane: this session's context fill and the 5-hour and
+  7-day limits, with what is left and when each resets.
+
 ## [0.4.0] - 2026-10-29
 
 ### Added
