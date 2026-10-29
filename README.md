@@ -14,6 +14,9 @@ Al tocar una sesión de la misma PC se abre: las de la app de escritorio en su c
 terminal enfocando su panel de [herdr](https://herdr.dev) (si corren dentro de herdr). Las
 sesiones de otras PCs solo se muestran.
 
+El botón **copiar** junto a cada sesión copia su nombre. Pegado en otra conversación ("pásale
+esto a orkestra-37"), Claude puede enviarle un mensaje a esa sesión.
+
 ## Cómo se comparten las sesiones entre PCs
 
 Cada PC lee sus propias sesiones de `~/.claude/sessions` y las publica en un **Gist secreto**

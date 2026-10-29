@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, RenderSurface } from 'claude-code'
 
 import type { OpenSession, SessionStatus, SessionsView } from '../types'
 
@@ -43,6 +43,28 @@ const openUrl = async ($: EngineInterface, url: string) => {
   }
   const { exitCode } = await $.process.run(['open', url]).catch(() => ({ exitCode: 1 }))
   if (exitCode !== 0) await $.process.run(['xdg-open', url])
+}
+
+// The desktop surface has no clipboard path for mods yet, so a refused copy falls back to the OS one.
+const copyText = async ($: EngineInterface, text: string, surface: RenderSurface) => {
+  const copied = await $.ui.copy({ text, surface }).catch(() => ({ isCopied: false }))
+  if (copied.isCopied) return true
+  const commands =
+    (await $.env.get('OS')) === 'Windows_NT'
+      ? [['clip']]
+      : [['pbcopy'], ['wl-copy'], ['xclip', '-selection', 'clipboard']]
+  for (const argv of commands) {
+    const { exitCode } = await $.process
+      .run(argv, { stdin: text, timeoutMs: 5000 })
+      .catch(() => ({ exitCode: 1 }))
+    if (exitCode === 0) return true
+  }
+  return false
+}
+
+const copyName = async ($: EngineInterface, one: OpenSession, surface: RenderSurface) => {
+  const isCopied = await copyText($, one.name, surface)
+  $.ui.toast(isCopied ? `Copiado: ${one.name}` : `No se pudo copiar ${one.name}.`)
 }
 
 // Desktop sessions open through the app's own claude:// link; terminal sessions only when herdr hosts them.
@@ -276,18 +298,27 @@ export const register: Register = on => {
               {ofHost.length === 0 && <Text dimColor>{'  '}Sin sesiones abiertas.</Text>}
               {ofHost.map(one => (
                 <Box flexDirection="column">
-                  {name === host && !one.isSelf ? (
-                    <Button key={one.sessionId} plain onPress={() => void goToSession($, one)}>
-                      <Text color={LOOK[one.status].color}>● </Text>
-                      <Text bold>{one.name}</Text>
-                    </Button>
-                  ) : (
-                    <Text>
-                      <Text color={LOOK[one.status].color}>● </Text>
-                      <Text bold>{one.name}</Text>
-                      {one.isSelf && <Text dimColor> (esta)</Text>}
-                    </Text>
-                  )}
+                  <Box flexDirection="row" gap={1}>
+                    {name === host && !one.isSelf ? (
+                      <Button key={one.sessionId} plain onPress={() => void goToSession($, one)}>
+                        <Text color={LOOK[one.status].color}>● </Text>
+                        <Text bold>{one.name}</Text>
+                      </Button>
+                    ) : (
+                      <Text>
+                        <Text color={LOOK[one.status].color}>● </Text>
+                        <Text bold>{one.name}</Text>
+                        {one.isSelf && <Text dimColor> (esta)</Text>}
+                      </Text>
+                    )}
+                    <Button
+                      key={`copy:${one.host}/${one.sessionId}`}
+                      label="copiar"
+                      plain
+                      dimColor
+                      onPress={press => void copyName($, one, press.surface)}
+                    />
+                  </Box>
                   <Text dimColor>
                     {'  '}
                     {baseName(one.cwd)} · {LOOK[one.status].label}

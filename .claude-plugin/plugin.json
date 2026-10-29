@@ -1,6 +1,6 @@
 {
   "name": "open-sessions",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Pane listing every open Claude Code session across your PCs (synced through a secret GitHub gist) and whether it is free, busy or waiting on you",
   "license": "MIT",
   "types": "./types/index.d.ts"
