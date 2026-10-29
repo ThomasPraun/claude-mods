@@ -1,0 +1,21 @@
+# Changelog
+
+All notable changes to this project are documented in this file.
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
+uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [0.2.0] - 2026-10-29
+
+### Added
+
+- Sessions from every PC, shared through a secret GitHub gist via the GitHub CLI.
+- Sessions grouped by PC in the pane.
+- Windows and Linux support.
+
+## [0.1.0] - 2026-10-29
+
+### Added
+
+- Pane listing the open Claude Code sessions of this machine as free, busy or waiting.
+- Toast when another session starts waiting on you.
+- `/sesiones` command to reopen the pane.

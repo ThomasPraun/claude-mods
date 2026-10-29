@@ -1,0 +1,266 @@
+import { atom, read, update } from 'claude-code'
+import type { Register } from 'claude-code'
+
+import type { OpenSession, SessionStatus, SessionsView } from '../types'
+
+const PANE = 'open-sessions'
+const LOCAL_POLL_MS = 3000
+// GitHub allows 5000 API calls per hour; a read and at most a write every 15 s stays far below.
+const REMOTE_POLL_MS = 15000
+const HEARTBEAT_MS = 60000
+// A PC that has not written for this long is off or offline: its sessions are hidden.
+const STALE_MS = 120000
+// Every PC finds the shared secret gist by this description.
+const GIST_DESCRIPTION = 'claude-open-sessions'
+
+const view = atom(
+  { plugin: 'open-sessions', key: 'view' } as const,
+  { host: '', sessions: [] },
+  { shape: 'view-1' },
+)
+
+const ORDER: Record<SessionStatus, number> = { waiting: 0, busy: 1, idle: 2 }
+const LOOK: Record<SessionStatus, { label: string; color: string }> = {
+  waiting: { label: 'te espera', color: 'error' },
+  busy: { label: 'ocupada', color: 'warning' },
+  idle: { label: 'libre', color: 'suggestion' },
+}
+
+const toStatus = (raw: unknown): SessionStatus =>
+  raw === 'busy' || raw === 'waiting' ? raw : 'idle'
+
+const baseName = (path: string) => path.split(/[\\/]/).filter(Boolean).at(-1) ?? path
+
+const byStatus = (a: OpenSession, b: OpenSession) =>
+  ORDER[a.status] - ORDER[b.status] || a.name.localeCompare(b.name)
+
+type HostReport = { host: string; updatedAt: number; sessions: OpenSession[] }
+
+export const register: Register = on => {
+  let previous = new Map<string, SessionStatus>()
+
+  on('session.start', async ($, e, next) => {
+    const started = await next(e)
+    await $.command.register({
+      name: 'sesiones',
+      description: 'Abre el panel de sesiones de Claude abiertas en tus PCs',
+    })
+    void $.ui.open({ id: PANE, title: 'Sesiones' })
+
+    const isWindows = (await $.env.get('OS')) === 'Windows_NT'
+    const home = (await $.env.get('HOME')) ?? (await $.env.get('USERPROFILE')) ?? ''
+    const configDir = (await $.env.get('CLAUDE_CONFIG_DIR')) ?? `${home}/.claude`
+    // Claude Code writes one <pid>.json per running session here; a crashed one leaves its file behind.
+    const sessionsDir = `${configDir}/sessions`
+    const selfId = await $.session.id()
+    const host = await $.process
+      .run(['hostname'], { timeoutMs: 5000 })
+      .then(({ stdout }) => stdout.trim())
+      .catch(() => '')
+      .then(name => name || 'esta PC')
+    const hostFile = `${host.replace(/[^A-Za-z0-9._-]/g, '_')}.json`
+
+    let local: OpenSession[] = []
+    let remote: OpenSession[] = []
+    let note: string | undefined
+
+    const publish = async () => {
+      const all = [...local, ...remote]
+      for (const one of all) {
+        const key = `${one.host}/${one.sessionId}`
+        const before = previous.get(key)
+        if (!one.isSelf && before !== undefined && before !== 'waiting' && one.status === 'waiting') {
+          $.ui.toast(`${one.name} (${baseName(one.cwd)}, ${one.host}) te espera`)
+        }
+      }
+      previous = new Map(all.map(one => [`${one.host}/${one.sessionId}`, one.status]))
+      const shown: SessionsView = { host, sessions: all, ...(note !== undefined && { note }) }
+      await update($, view, () => shown)
+    }
+
+    const isAlive = async (pid: number) => {
+      try {
+        if (isWindows) {
+          const { stdout } = await $.process.run(['tasklist', '/FI', `PID eq ${pid}`, '/NH'], {
+            timeoutMs: 5000,
+          })
+          return stdout.includes(String(pid))
+        }
+        const { exitCode } = await $.process.run(['kill', '-0', String(pid)], { timeoutMs: 2000 })
+        return exitCode === 0
+      } catch {
+        return true
+      }
+    }
+
+    let isPollingLocal = false
+    const pollLocal = async () => {
+      if (isPollingLocal) return
+      isPollingLocal = true
+      try {
+        const entries = await $.fs.list(sessionsDir).catch(() => [])
+        const found: OpenSession[] = []
+        for (const entry of entries) {
+          if (entry.kind !== 'file' || !/^\d+\.json$/.test(entry.name)) continue
+          try {
+            const raw = JSON.parse(await $.fs.read(`${sessionsDir}/${entry.name}`))
+            if (!(await isAlive(raw.pid))) continue
+            found.push({
+              sessionId: String(raw.sessionId),
+              name: String(raw.name ?? baseName(raw.cwd ?? '')),
+              cwd: String(raw.cwd ?? ''),
+              status: toStatus(raw.status),
+              ...(typeof raw.waitingFor === 'string' && { waitingFor: raw.waitingFor }),
+              entrypoint: String(raw.entrypoint ?? ''),
+              host,
+              isSelf: raw.sessionId === selfId,
+            })
+          } catch {
+            // A file mid-write or already removed: the next poll reads it.
+          }
+        }
+        local = found.sort(byStatus)
+        await publish()
+      } finally {
+        isPollingLocal = false
+      }
+    }
+
+    const gh = async (args: string[], stdin?: string) => {
+      const { exitCode, stdout, stderr } = await $.process.run(['gh', ...args], {
+        timeoutMs: 20000,
+        ...(stdin !== undefined && { stdin }),
+      })
+      if (exitCode !== 0) throw new Error(stderr.trim() || `gh exited ${exitCode}`)
+      return JSON.parse(stdout)
+    }
+
+    const findOrCreateGist = async (): Promise<string> => {
+      const gists: Array<{ id: string; description: string | null }> = await gh([
+        'api',
+        'gists?per_page=100',
+      ])
+      const found = gists.find(gist => gist.description === GIST_DESCRIPTION)
+      if (found) return found.id
+      const created: { id: string } = await gh(
+        ['api', '-X', 'POST', 'gists', '--input', '-'],
+        JSON.stringify({
+          description: GIST_DESCRIPTION,
+          public: false,
+          files: {
+            'README.md': {
+              content: 'Estado de las sesiones de Claude Code, escrito por el mod open-sessions.',
+            },
+          },
+        }),
+      )
+      return created.id
+    }
+
+    let gistId: string | undefined
+    let lastWritten = ''
+    let lastWriteAt = 0
+    let isPollingRemote = false
+    const pollRemote = async () => {
+      if (isPollingRemote) return
+      isPollingRemote = true
+      try {
+        gistId ??= await findOrCreateGist()
+        const now = await $.clock.now()
+        const mine = local.map(({ isSelf: _, ...one }) => one)
+        const mineText = JSON.stringify(mine)
+        if (mineText !== lastWritten || now - lastWriteAt > HEARTBEAT_MS) {
+          const report = JSON.stringify({ host, updatedAt: now, sessions: mine })
+          await gh(
+            ['api', '-X', 'PATCH', `gists/${gistId}`, '--input', '-'],
+            JSON.stringify({ files: { [hostFile]: { content: report } } }),
+          )
+          lastWritten = mineText
+          lastWriteAt = now
+        }
+        const gist: { files: Record<string, { filename: string; content?: string }> } = await gh([
+          'api',
+          `gists/${gistId}`,
+        ])
+        const others: OpenSession[] = []
+        for (const file of Object.values(gist.files)) {
+          if (file.filename === hostFile || !file.filename.endsWith('.json') || !file.content) continue
+          try {
+            const report: HostReport = JSON.parse(file.content)
+            if (now - report.updatedAt > STALE_MS) continue
+            others.push(
+              ...report.sessions
+                .map(one => ({ ...one, host: report.host, isSelf: false }))
+                .sort(byStatus),
+            )
+          } catch {
+            // Another PC's file mid-write: read it on the next poll.
+          }
+        }
+        remote = others
+        note = undefined
+      } catch (error) {
+        const isMissing = String(error).includes('ENOENT') || String(error).includes('not found')
+        note = isMissing
+          ? 'Sin GitHub CLI (gh): solo se ven las sesiones de esta PC.'
+          : 'No se pudo sincronizar con GitHub; reintentando.'
+      } finally {
+        isPollingRemote = false
+        await publish()
+      }
+    }
+
+    await pollLocal()
+    void pollRemote()
+    $.clock.every(LOCAL_POLL_MS, () => void pollLocal())
+    $.clock.every(REMOTE_POLL_MS, () => void pollRemote())
+
+    return started
+  })
+
+  on('command.run', { command: 'sesiones' }, async $ => {
+    await $.ui.open({ id: PANE, title: 'Sesiones' })
+
+    return { text: 'Panel de sesiones abierto.' }
+  })
+
+  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
+    const { Box, Text } = $.ui.resolve(e)
+    const { host, sessions, note } = await read($, view)
+    const hosts = [host, ...new Set(sessions.map(one => one.host).filter(name => name !== host))]
+
+    return (
+      <Box flexDirection="column" gap={1}>
+        {note !== undefined && <Text dimColor>{note}</Text>}
+        {hosts.map(name => {
+          const ofHost = sessions.filter(one => one.host === name)
+
+          return (
+            <Box flexDirection="column">
+              <Text weight="semibold">
+                {name}
+                {name === host ? ' (esta PC)' : ''}
+              </Text>
+              {ofHost.length === 0 && <Text dimColor>{'  '}Sin sesiones abiertas.</Text>}
+              {ofHost.map(one => (
+                <Box flexDirection="column">
+                  <Text>
+                    <Text color={LOOK[one.status].color}>● </Text>
+                    <Text bold>{one.name}</Text>
+                    {one.isSelf && <Text dimColor> (esta)</Text>}
+                  </Text>
+                  <Text dimColor>
+                    {'  '}
+                    {baseName(one.cwd)} · {LOOK[one.status].label}
+                    {one.status === 'waiting' && one.waitingFor ? ` (${one.waitingFor})` : ''}
+                    {one.entrypoint === 'claude-desktop' ? ' · app' : ' · terminal'}
+                  </Text>
+                </Box>
+              ))}
+            </Box>
+          )
+        })}
+      </Box>
+    )
+  })
+}
