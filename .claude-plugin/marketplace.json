@@ -1,5 +1,9 @@
 {
   "name": "claude-mods",
   "owner": { "name": "ThomasPraun" },
-  "plugins": [{ "name": "open-sessions", "source": "./" }]
+  "description": "Mods de Claude Code: panel de sesiones abiertas en todas tus PCs y banda de sesión bajo el prompt",
+  "plugins": [
+    { "name": "open-sessions", "source": "./plugins/open-sessions" },
+    { "name": "usage-band", "source": "./plugins/usage-band" }
+  ]
 }

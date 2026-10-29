@@ -14,9 +14,14 @@ const PANE = 'open-sessions'
 const LOCAL_POLL_MS = 3000
 // GitHub allows 5000 API calls per hour; a read and at most a write every 15 s stays far below.
 const REMOTE_POLL_MS = 15000
-const HEARTBEAT_MS = 60000
+// Each write is a gist revision, so an unchanged PC only rewrites this often to say it is alive.
+const HEARTBEAT_MS = 5 * 60_000
 // A PC that has not written for this long is off or offline: its sessions are hidden.
-const STALE_MS = 120000
+const STALE_MS = 10 * 60_000
+// Titles live in transcripts of up to tens of MB, so each is searched at most this often.
+const TITLE_REFRESH_MS = 30_000
+const SOUND_FINISHED = 'sounds/finished.wav'
+const SOUND_WAITING = 'sounds/waiting.wav'
 // Every PC finds the shared secret gist by this description.
 const GIST_DESCRIPTION = 'claude-open-sessions'
 
@@ -81,6 +86,14 @@ const LIMIT_LABELS: Record<string, string> = { five_hour: '5 horas', seven_day: 
 
 // Percent used: under 50 is fine, under 80 is a warning, the rest is near the limit.
 const levelColor = (used: number) => (used >= 80 ? 'error' : used >= 50 ? 'warning' : 'success')
+
+const formatSince = (since: number | undefined, now: number) => {
+  if (since === undefined) return undefined
+  const minutes = Math.max(0, Math.floor((now - since) / 60_000))
+  if (minutes < 1) return 'recién'
+  if (minutes < 60) return `${minutes} min`
+  return `${Math.floor(minutes / 60)} h ${minutes % 60} min`
+}
 
 const formatWindow = (tokens: number) =>
   tokens >= 1_000_000 ? `${Math.round(tokens / 1_000_000)}M` : `${Math.round(tokens / 1000)}k`
@@ -246,6 +259,58 @@ export const register: Register = on => {
     let remote: OpenSession[] = []
     let note: string | undefined
 
+    // Session id → the title last found in its transcript and when it was looked for.
+    const titles = new Map<string, { title?: string; checkedAt: number }>()
+    // Transcripts sit in a folder named after the cwd with every non-alphanumeric character as `-`.
+    const transcriptOf = (one: OpenSession) =>
+      `${configDir}/projects/${one.cwd.replace(/[^A-Za-z0-9]/g, '-')}/${one.sessionId}.jsonl`
+    const TITLE_PATTERN = '"(customTitle|aiTitle)":"[^"]*"'
+
+    const readTitle = async (path: string) => {
+      const argv = isWindows
+        ? [
+            'powershell',
+            '-NoProfile',
+            '-Command',
+            `Select-String -Path '${path.replace(/'/g, "''")}' -Pattern '${TITLE_PATTERN}' -AllMatches | ForEach-Object { $_.Matches.Value }`,
+          ]
+        : ['grep', '-oE', TITLE_PATTERN, path]
+      const { stdout } = await $.process.run(argv, { timeoutMs: 10_000 })
+      const found = stdout.split(/\r?\n/).filter(Boolean)
+      // A `/rename` (customTitle) wins over the generated title (aiTitle).
+      const pick = found.filter(line => line.startsWith('"customTitle"')).pop() ?? found.pop()
+      if (pick === undefined) return undefined
+      const parsed: Record<string, string> = JSON.parse(`{${pick}}`)
+      return Object.values(parsed)[0] || undefined
+    }
+
+    let isRefreshingTitles = false
+    const refreshTitles = async () => {
+      if (isRefreshingTitles) return
+      isRefreshingTitles = true
+      try {
+        const now = await $.clock.now()
+        // A desktop session's name already is its title.
+        for (const one of local.filter(one => one.hostSessionId === undefined)) {
+          const known = titles.get(one.sessionId)
+          if (known !== undefined && now - known.checkedAt < TITLE_REFRESH_MS) continue
+          const title = await readTitle(transcriptOf(one)).catch(() => known?.title)
+          titles.set(one.sessionId, { ...(title !== undefined && { title }), checkedAt: now })
+        }
+      } finally {
+        isRefreshingTitles = false
+      }
+    }
+
+    // Every session running this mod sees the same change; a marker file lets one of them play it.
+    const soundMarker = `${configDir}/open-sessions-sound.json`
+    const playOnce = async (eventKey: string, asset: string) => {
+      const last = await $.fs.read(soundMarker).catch(() => '')
+      if (last === eventKey) return
+      await $.fs.write(soundMarker, eventKey)
+      await $.audio.play({ asset }).catch(() => undefined)
+    }
+
     const publish = async () => {
       const all = [...local, ...remote]
       const finished: string[] = []
@@ -254,9 +319,14 @@ export const register: Register = on => {
         const before = previous.get(sessionKey(one))
         if (one.isSelf || before === undefined || before === one.status) continue
         const where = `${one.name} (${baseName(one.cwd)}, ${one.host})`
-        if (one.status === 'waiting') $.ui.toast(`${where} te espera`)
+        const eventKey = `${sessionKey(one)}:${one.status}:${one.since ?? ''}`
+        if (one.status === 'waiting') {
+          $.ui.toast(`${where} te espera`)
+          void playOnce(eventKey, SOUND_WAITING)
+        }
         if (before === 'busy' && one.status === 'idle') {
           $.ui.toast(`${where} terminó`)
+          void playOnce(eventKey, SOUND_FINISHED)
           finished.push(sessionKey(one))
         }
         if (one.status === 'busy') resumed.push(sessionKey(one))
@@ -304,6 +374,10 @@ export const register: Register = on => {
               cwd: String(raw.cwd ?? ''),
               status: toStatus(raw.status),
               ...(typeof raw.waitingFor === 'string' && { waitingFor: raw.waitingFor }),
+              ...(typeof raw.statusUpdatedAt === 'number' && { since: raw.statusUpdatedAt }),
+              ...(titles.get(String(raw.sessionId))?.title !== undefined && {
+                title: titles.get(String(raw.sessionId))?.title,
+              }),
               entrypoint: String(raw.entrypoint ?? ''),
               ...(typeof raw.hostSessionId === 'string' && { hostSessionId: raw.hostSessionId }),
               host,
@@ -316,6 +390,7 @@ export const register: Register = on => {
         local = found.sort(byStatus)
         await publish()
         await refreshSubagents($)
+        void refreshTitles()
       } finally {
         isPollingLocal = false
       }
@@ -432,6 +507,7 @@ export const register: Register = on => {
     const agents = await read($, subagents)
     const folded = await read($, collapsed)
     const marks = await read($, unseen)
+    const now = await $.clock.now()
     const hosts = [host, ...new Set(sessions.map(one => one.host).filter(name => name !== host))]
 
     const header = (
@@ -558,10 +634,17 @@ export const register: Register = on => {
                         onPress={press => void copyName($, one, press.surface)}
                       />
                     </Box>
+                    {one.title !== undefined && (
+                      <Text wrap="truncate-end" italic>
+                        {'  '}
+                        {one.title}
+                      </Text>
+                    )}
                     <Text dimColor>
                       {'  '}
                       {baseName(one.cwd)} · {LOOK[one.status].label}
                       {one.status === 'waiting' && one.waitingFor ? ` (${one.waitingFor})` : ''}
+                      {formatSince(one.since, now) !== undefined ? ` · ${formatSince(one.since, now)}` : ''}
                       {one.entrypoint === 'claude-desktop' ? ' · app' : ' · terminal'}
                     </Text>
                   </Box>

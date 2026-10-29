@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-10-29
+
+### Added
+
+- Each session shows its chat title and how long it has been in its current status.
+- Sounds when a session starts waiting on you or finishes (macOS), played once across sessions.
+
+### Changed
+
+- An unchanged PC rewrites the gist every 5 minutes instead of every minute, and a PC is hidden
+  after 10 minutes without writing instead of 2.
+- Moved into `plugins/open-sessions` of the `claude-mods` marketplace, beside `usage-band`.
+
 ## [0.6.0] - 2026-10-29
 
 ### Added

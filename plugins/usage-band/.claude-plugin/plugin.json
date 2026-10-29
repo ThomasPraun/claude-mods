@@ -1,0 +1,10 @@
+{
+  "name": "usage-band",
+  "version": "0.2.0",
+  "description": "Banda bajo el prompt: usuario, ruta, rama, modelo y título del chat; el modelo de cada subagente en su fila",
+  "license": "MIT",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "Thomas Praun"
+  }
+}

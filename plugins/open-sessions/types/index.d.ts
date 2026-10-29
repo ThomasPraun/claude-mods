@@ -6,6 +6,10 @@ export type OpenSession = {
   cwd: string
   status: SessionStatus
   waitingFor?: string
+  /** Epoch ms of the last status change, as the session file reports it. */
+  since?: number
+  /** The chat's title (`/rename`, else the generated one); absent until it has one. */
+  title?: string
   entrypoint: string
   hostSessionId?: string
   host: string
