@@ -55,6 +55,19 @@ const collapsed = atom({ plugin: 'open-sessions', key: 'collapsed' } as const, {
   shape: 'collapsed-1',
 })
 
+const armed = atom({ plugin: 'open-sessions', key: 'armed' } as const, '', { shape: 'armed-1' })
+// The first press on the trash arms it; a second press within this window closes the session.
+const ARM_MS = 4000
+// Remote Control sessions run on another PC, so the trash only hides them here, across sessions.
+const HIDDEN_KEY = 'hidden-remote'
+// The desktop app's own MCP server; archiving there stops the process and drops it from the sidebar.
+const APP_SESSIONS_SERVER = 'ccd_session_mgmt'
+
+const readHidden = async ($: EngineInterface) => {
+  const value = await $.store.get(HIDDEN_KEY).catch(() => undefined)
+  return Array.isArray(value) ? value.filter((id): id is string => typeof id === 'string') : []
+}
+
 // Hex rather than theme names: the desktop pane draws some theme names (warning, suggestion) as plain text.
 const RED = '#e5786d'
 const ORANGE = '#d7875f'
@@ -203,6 +216,57 @@ const goToSession = async ($: EngineInterface, one: OpenSession) => {
     // Neither the app link nor herdr answered: fall through to the toast.
   }
   $.ui.toast(`No se puede abrir ${one.name} desde aquí.`)
+}
+
+// Set by session.start, whose polls own the lists; the pane calls it after closing one.
+let refreshSessions: (hiddenRemote?: string) => Promise<void> = async () => undefined
+
+const closeSession = async ($: EngineInterface, one: OpenSession) => {
+  if (one.remoteId !== undefined) {
+    const hidden = await readHidden($)
+    await $.store.set(HIDDEN_KEY, [...new Set([...hidden, one.remoteId])])
+    await refreshSessions(one.remoteId)
+    $.ui.toast(`Ocultada: ${one.name}. Corre en otra PC; ciérrala allí para cerrarla del todo.`)
+    return
+  }
+  try {
+    if (one.hostSessionId !== undefined) {
+      const result = await $.mcp.call(APP_SESSIONS_SERVER, 'archive_session', {
+        session_id: one.hostSessionId,
+        reason: 'Cerrada desde el panel de Sesiones',
+      })
+      const said = result.content
+        .flatMap(block => (block.type === 'text' ? [block.text] : []))
+        .join(' ')
+      if (result.isError) throw new Error(said)
+      $.ui.toast(`Cerrada: ${one.name}. ${said}`.trim())
+    } else if (one.pid !== undefined) {
+      const { exitCode } = await $.process.run(['kill', '-TERM', String(one.pid)], { timeoutMs: 5000 })
+      if (exitCode !== 0) throw new Error(`kill terminó con ${exitCode}`)
+      $.ui.toast(`Cerrada: ${one.name}.`)
+    } else {
+      throw new Error('no hay proceso que cerrar')
+    }
+  } catch (error) {
+    const reason = error instanceof Error && error.message ? ` (${error.message})` : ''
+    $.ui.toast(`No se pudo cerrar ${one.name}${reason}.`)
+  }
+  await refreshSessions()
+}
+
+const pressTrash = async ($: EngineInterface, one: OpenSession) => {
+  const key = sessionKey(one)
+  if ((await read($, armed)) !== key) {
+    await update($, armed, () => key)
+    // An unload or reload mid-wait aborts the sleep; the armed mark goes with the session.
+    await $.clock
+      .sleep(ARM_MS)
+      .then(() => update($, armed, current => (current === key ? '' : current)))
+      .catch(() => undefined)
+    return
+  }
+  await update($, armed, () => '')
+  await closeSession($, one)
 }
 
 // The agent list carries no model; the spawn answers it, so it is kept here by agent id.
@@ -394,6 +458,7 @@ export const register: Register = on => {
                 title: titles.get(String(raw.sessionId))?.title,
               }),
               entrypoint: String(raw.entrypoint ?? ''),
+              ...(typeof raw.pid === 'number' && { pid: raw.pid }),
               ...(typeof raw.hostSessionId === 'string' && { hostSessionId: raw.hostSessionId }),
               host,
               isSelf: raw.sessionId === selfId,
@@ -454,7 +519,9 @@ export const register: Register = on => {
         const listed: { data?: RemoteSession[] } = JSON.parse(response.text)
         // This PC's sessions are listed too when they have Remote Control on: drop those by title.
         const localNames = new Set(local.flatMap(one => [one.name, one.title].filter(Boolean)))
+        const hidden = new Set(await readHidden($))
         remote = (listed.data ?? [])
+          .filter(one => !hidden.has(one.id))
           .filter(one => one.environment_kind === 'bridge' && one.status === 'active')
           .filter(one => one.connection_status === 'connected')
           .filter(one => !localNames.has(one.title ?? ''))
@@ -486,6 +553,14 @@ export const register: Register = on => {
       }
     }
 
+    refreshSessions = async hiddenRemote => {
+      if (hiddenRemote !== undefined) {
+        remote = remote.filter(one => one.remoteId !== hiddenRemote)
+        await publish()
+      }
+      await pollLocal()
+    }
+
     await pollLocal()
     void pollRemote()
     $.clock.every(LOCAL_POLL_MS, () => void pollLocal())
@@ -513,6 +588,7 @@ export const register: Register = on => {
     const agents = await read($, subagents)
     const folded = await read($, collapsed)
     const marks = await read($, unseen)
+    const armedKey = await read($, armed)
     const now = await $.clock.now()
     const hosts = [host, ...new Set(sessions.map(one => one.host).filter(name => name !== host))]
     const isUnseen = (one: OpenSession) => marks[sessionKey(one)] === true
@@ -590,6 +666,26 @@ export const register: Register = on => {
                 onPress={press => void copyName($, one, press.surface)}
               />
             </Box>
+            {!one.isSelf && (
+              <Box flexShrink={0}>
+                {armedKey === sessionKey(one) ? (
+                  <Button
+                    key={`close:${sessionKey(one)}`}
+                    label={one.remoteId !== undefined ? ' ¿ocultar?' : ' ¿cerrar?'}
+                    plain
+                    onPress={() => void pressTrash($, one)}
+                  />
+                ) : (
+                  <Button
+                    key={`close:${sessionKey(one)}`}
+                    label=" 🗑"
+                    plain
+                    dimColor
+                    onPress={() => void pressTrash($, one)}
+                  />
+                )}
+              </Box>
+            )}
           </Box>
           {one.title !== undefined && (
             <Text wrap="truncate-end" italic>

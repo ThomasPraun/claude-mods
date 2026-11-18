@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] - 2026-11-17
+
+### Added
+
+- A 🗑 button beside each session's copy button closes it after a confirming second press: a
+  desktop chat is archived in the app, a terminal session is stopped, and a Remote Control
+  session from another PC is hidden from the pane.
+
 ## [0.9.1] - 2026-10-29
 
 ### Fixed

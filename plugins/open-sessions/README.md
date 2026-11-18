@@ -19,6 +19,11 @@ herdr).
 El icono **⧉** junto al nombre de cada sesión copia ese nombre. Pegado en otra conversación
 ("pásale esto a orkestra-37"), Claude puede enviarle un mensaje a esa sesión.
 
+El **🗑** a su lado cierra la sesión: tócalo una vez y pasa a **¿cerrar?**; tócalo de nuevo en
+los 4 segundos siguientes para confirmar. Un chat de la app se archiva (la app puede pedirte que
+lo apruebes y se recupera desde Archivados); una sesión de terminal se detiene. Una sesión de
+Remote Control corre en otra PC, así que solo se oculta de este panel.
+
 ## Sesiones de otras PCs
 
 Una sesión de otra PC aparece en el grupo **Remote Control** solo si tiene Remote Control activo
