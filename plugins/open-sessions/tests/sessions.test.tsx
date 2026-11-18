@@ -297,3 +297,33 @@ test('the trash hides a Remote Control session, which stays hidden on the next r
   expect(await ui.find({ type: 'Text', text: /totemIA-Linux/ })).toBeUndefined()
   await ui.unmount()
 })
+
+test('the trash on this chat archives it as self', async ($, on) => {
+  mock.clock(on, { now: NOW })
+  machine(on, [{ ...orkestra, sessionId: 'self', entrypoint: 'claude-desktop', hostSessionId: 'local_me' }])
+  const args: unknown[] = []
+  on('mcp.call', (_$, e) => {
+    args.push((e as { args: unknown }).args)
+    return { value: { content: [], isError: false } }
+  })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'close:MacTest/self' })
+  await ui.press({ key: 'close:MacTest/self' })
+  expect(args).toEqual([{ session_id: 'self', reason: 'Cerrada desde el panel de Sesiones' }])
+  await ui.unmount()
+})
+
+test('an auto-mode refusal from the app is explained in plain words', async ($, on) => {
+  mock.clock(on, { now: NOW })
+  const world = machine(on, [{ ...orkestra, entrypoint: 'claude-desktop', hostSessionId: 'local_abc-123' }])
+  on('mcp.call', () => ({ deny: "hook error: Not run: in auto mode Claude Desktop doesn't run this tool" }))
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'close:MacTest/ork' })
+  await ui.press({ key: 'close:MacTest/ork' })
+  expect(world.toasts.some(text => text.includes('modo automático'))).toBe(true)
+  await ui.unmount()
+})

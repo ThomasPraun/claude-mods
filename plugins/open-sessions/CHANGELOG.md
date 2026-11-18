@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.1] - 2026-11-17
+
+### Changed
+
+- The 🗑 also closes the chat you are in.
+- When the app refuses to archive because the session runs in auto mode, the toast says so in
+  plain words instead of showing the app's error.
+
 ## [0.10.0] - 2026-11-17
 
 ### Added

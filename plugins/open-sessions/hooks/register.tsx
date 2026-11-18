@@ -232,7 +232,8 @@ const closeSession = async ($: EngineInterface, one: OpenSession) => {
   try {
     if (one.hostSessionId !== undefined) {
       const result = await $.mcp.call(APP_SESSIONS_SERVER, 'archive_session', {
-        session_id: one.hostSessionId,
+        // The app archives the calling session only by this literal, then moves to another chat.
+        session_id: one.isSelf ? 'self' : one.hostSessionId,
         reason: 'Cerrada desde el panel de Sesiones',
       })
       const said = result.content
@@ -248,8 +249,16 @@ const closeSession = async ($: EngineInterface, one: OpenSession) => {
       throw new Error('no hay proceso que cerrar')
     }
   } catch (error) {
-    const reason = error instanceof Error && error.message ? ` (${error.message})` : ''
-    $.ui.toast(`No se pudo cerrar ${one.name}${reason}.`)
+    const message = error instanceof Error ? error.message : ''
+    // The app refuses archiving from a mod's own code in auto mode; any other mode asks on a card.
+    if (/in auto mode/i.test(message)) {
+      $.ui.toast(
+        `No se pudo cerrar ${one.name}: en modo automático la app no deja que un mod archive chats. ` +
+          'Cambia a otro modo de permisos (la app te pedirá aprobarlo) o pídeselo a Claude.',
+      )
+    } else {
+      $.ui.toast(`No se pudo cerrar ${one.name}${message ? ` (${message})` : ''}.`)
+    }
   }
   await refreshSessions()
 }
@@ -666,26 +675,24 @@ export const register: Register = on => {
                 onPress={press => void copyName($, one, press.surface)}
               />
             </Box>
-            {!one.isSelf && (
-              <Box flexShrink={0}>
-                {armedKey === sessionKey(one) ? (
-                  <Button
-                    key={`close:${sessionKey(one)}`}
-                    label={one.remoteId !== undefined ? ' ¿ocultar?' : ' ¿cerrar?'}
-                    plain
-                    onPress={() => void pressTrash($, one)}
-                  />
-                ) : (
-                  <Button
-                    key={`close:${sessionKey(one)}`}
-                    label=" 🗑"
-                    plain
-                    dimColor
-                    onPress={() => void pressTrash($, one)}
-                  />
-                )}
-              </Box>
-            )}
+            <Box flexShrink={0}>
+              {armedKey === sessionKey(one) ? (
+                <Button
+                  key={`close:${sessionKey(one)}`}
+                  label={one.remoteId !== undefined ? ' ¿ocultar?' : ' ¿cerrar?'}
+                  plain
+                  onPress={() => void pressTrash($, one)}
+                />
+              ) : (
+                <Button
+                  key={`close:${sessionKey(one)}`}
+                  label=" 🗑"
+                  plain
+                  dimColor
+                  onPress={() => void pressTrash($, one)}
+                />
+              )}
+            </Box>
           </Box>
           {one.title !== undefined && (
             <Text wrap="truncate-end" italic>
