@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.2] - 2026-11-17
+
+### Removed
+
+- The 🗑 button from 0.10.0 and 0.10.1: in auto mode the app does not let a mod archive chats,
+  so the button could not close them.
+
 ## [0.10.1] - 2026-11-17
 
 ### Changed

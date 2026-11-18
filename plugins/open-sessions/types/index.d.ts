@@ -11,8 +11,6 @@ export type OpenSession = {
   /** The chat's title (`/rename`, else the generated one); absent until it has one. */
   title?: string
   entrypoint: string
-  /** The CLI process; absent for Remote Control sessions. */
-  pid?: number
   hostSessionId?: string
   /** A Remote Control session's id in the account (`cse_…`); absent for this PC's own. */
   remoteId?: string
@@ -63,8 +61,6 @@ declare module 'claude-code' {
       collapsed: Shaped<Record<string, boolean>>
       /** `<host>/<sessionId>` of sessions that went from busy to free and were not looked at yet. */
       unseen: Shaped<Record<string, boolean>>
-      /** `<host>/<sessionId>` whose trash button was pressed once and awaits the confirming press; '' when none. */
-      armed: Shaped<string>
     }
   }
 }
